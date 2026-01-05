@@ -117,18 +117,160 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
 
 const authMiddleware = (req, res, next) => {
   const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-  if (!token) return res.status(401).json({ error: 'Niste prijavljeni.' });
+  
+  if (!authHeader) {
+    return res.status(401).json({ error: 'Niste prijavljeni.' });
+  }
+
+  const token = authHeader.split(' ')[1]; // "beraerr token"
+  
+  if (!token) {
+    return res.status(401).json({ error: 'Niste prijavljeni.' });
+  }
 
   try {
-    const user = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = user;
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded; // Attach user info to the request
     next();
-  } catch {
+  } catch (err) {
     return res.status(403).json({ error: 'Nevažeći token.' });
   }
 };
 
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
+});
+
+// All videos sorted by date (newest first)
+app.get('/api/videos', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT v.id, v.title, v.description, v.thumbnail, v.created_at, u.id as user_id, u.username, u.first_name, u.last_name
+      FROM videos v
+      JOIN users u ON v.user_id = u.id
+      ORDER BY v.created_at DESC
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Greska pri ucitavanju videa.'});
+  }
+});
+
+// Get user profile by ID (public view)
+app.get('/api/users/:id/profile', async (req, res) => {
+  const { id } = req.params;
+  
+  try {
+    // USer info
+    const userResult = await pool.query(
+      'SELECT id, username, first_name, last_name, created_at FROM users WHERE id = $1',
+      [id]
+    );
+    
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Korisnik nije pronadjen.' });
+    }
+    
+    const user = userResult.rows[0];
+    
+    // Get videos the user posted
+    const videosResult = await pool.query(
+      'SELECT id, title, description, thumbnail, created_at FROM videos WHERE user_id = $1 ORDER BY created_at DESC',
+      [id]
+    );
+    
+    // Get user's comments
+    const commentsResult = await pool.query(`
+      SELECT c.id, c.content, c.created_at, v.id as video_id, v.title as video_title
+      FROM comments c
+      JOIN videos v ON c.video_id = v.id
+      WHERE c.user_id = $1
+      ORDER BY c.created_at DESC
+    `, [id]);
+    
+    res.json({
+      user,
+      videos: videosResult.rows,
+      comments: commentsResult.rows
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Greska pri ucitavanju profila.' });
+  }
+});
+
+// COmment
+app.post('/api/videos/:id/comment', authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  const { content } = req.body;
+  const userId = req.user.id;
+
+  if (!content || content.trim().length === 0) {
+    return res.status(400).json({ error: 'Komentar ne može biti prazan.' });
+  }
+
+  if (content.length > 60) {
+    return res.status(400).json({ error: 'Komentar ne sme biti duži od 60 karaktera.' });
+  }
+
+  try {
+    const result = await pool.query(
+      'INSERT INTO comments (user_id, video_id, content) VALUES ($1, $2, $3) RETURNING *',
+      [userId, id, content]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Greska pri dodavanju komentara.' });
+  }
+});
+
+// Like
+app.post('/api/videos/:id/like', authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.id;
+
+  try {
+    // Check if already liked
+    const existing = await pool.query(
+      'SELECT * FROM likes WHERE user_id = $1 AND video_id = $2',
+      [userId, id]
+    );
+
+    if (existing.rows.length > 0) {
+      return res.status(400).json({ error: 'Vec ste lajkovali ovaj video.' });
+    }
+
+    const result = await pool.query(
+      'INSERT INTO likes (user_id, video_id) VALUES ($1, $2) RETURNING *',
+      [userId, id]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Greska pri lajkovanju videa.' });
+  }
+});
+
+// Delete the like
+app.delete('/api/videos/:id/like', authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.id;
+
+  try {
+    const result = await pool.query(
+      'DELETE FROM likes WHERE user_id = $1 AND video_id = $2 RETURNING *',
+      [userId, id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Niste lajkovali ovaj video.' });
+    }
+
+    res.json({ message: 'Lajk uklonjen.' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Greska pri uklanjanju lajka.' });
+  }
 });

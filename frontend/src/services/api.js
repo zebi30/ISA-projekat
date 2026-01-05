@@ -21,3 +21,17 @@ export const registerUser = async (user) => {
   if (!res.ok) throw new Error(data.error || 'Registration failed');
   return data;
 };
+
+export const getPublicVideos = async () => {
+  const res = await fetch(`${BASE_URL}/videos`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to fetch videos');
+  return data;
+};
+
+export const getUserProfile = async (userId) => {
+  const res = await fetch(`${BASE_URL}/users/${userId}/profile`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to fetch user profile');
+  return data;
+}
