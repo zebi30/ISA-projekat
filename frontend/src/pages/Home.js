@@ -37,6 +37,21 @@ export default function Home() {
     navigate('/login');
   };
 
+  const handleUploadClick = () => {
+    const token = localStorage.getItem("token"); // ili accessToken
+    if (!token) {
+      alert("Moraš se prijaviti da bi uploadovao video.");
+      navigate("/login");
+      return;
+    }
+    navigate("/upload");
+  };
+
+  const handleWatchClick = (videoId) => {
+    navigate(`/videos/${videoId}`);
+  };
+
+
   if (loading) return <div style={{ padding: '40px', textAlign: 'center' }}>Učitavanje...</div>;
   if (error) return <div style={{ padding: '40px', textAlign: 'center', color: 'red' }}>{error}</div>;
 
@@ -50,6 +65,12 @@ export default function Home() {
           </button>
           <button onClick={() => navigate('/register')} style={{ padding: '10px 20px', cursor: 'pointer' }}>
             Register
+          </button>
+          <button
+            onClick={handleUploadClick}
+            style={{ padding: "10px 20px", cursor: "pointer", background: "#ff4d4f", color: "white", border: "none", borderRadius: 6, fontWeight: 700 }}
+          >
+            🎥 Upload
           </button>
         </div>
       </div>
@@ -78,6 +99,12 @@ export default function Home() {
               </p>
               
               <div style={{ marginTop: '15px', display: 'flex', gap: '10px' }}>
+                <button
+                  onClick={() => handleWatchClick(video.id)}
+                  style={{ padding: "8px 16px", cursor: "pointer", border: "1px solid #ddd", borderRadius: "4px", backgroundColor: "white" }}
+                >
+                  ▶️ Pogledaj
+                </button>
                 <button onClick={handleLikeClick} style={{ padding: '8px 16px', cursor: 'pointer', border: '1px solid #ddd', borderRadius: '4px', backgroundColor: 'white' }}>
                   ❤️ Lajkuj
                 </button>
