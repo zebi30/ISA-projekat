@@ -7,6 +7,10 @@ const { Pool } = require('pg');
 const nodemailer = require('nodemailer');
 const rateLimit = require('express-rate-limit');
 const crypto = require('crypto');
+const path = require("path");
+
+const videosRoutes = require("./routes/videos");
+const thumbnailsRoutes = require("./routes/thumbnails");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -14,9 +18,7 @@ app.use(cors());
 app.use(express.json());
 
 // PostgreSQL pool
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL
-});
+const pool = require("./pool");
 
 // Rate limiter (5 requests per minute per IP)
 const loginLimiter = rateLimit({
@@ -136,10 +138,6 @@ const authMiddleware = (req, res, next) => {
     return res.status(403).json({ error: 'Nevažeći token.' });
   }
 };
-
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-});
 
 // All videos sorted by date (newest first)
 app.get('/api/videos', async (req, res) => {
@@ -274,3 +272,49 @@ app.delete('/api/videos/:id/like', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Greska pri uklanjanju lajka.' });
   }
 });
+
+// Get single video by id (public)
+app.get("/api/videos/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).json({ message: "Invalid video id" });
+
+  try {
+    const result = await pool.query(
+      `
+      SELECT v.id, v.title, v.description, v.video_path, v.thumbnail, v.created_at,
+             u.id as user_id, u.username, u.first_name, u.last_name
+      FROM videos v
+      JOIN users u ON v.user_id = u.id
+      WHERE v.id = $1
+      `,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: "Video nije pronađen" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+
+//Kreiranje ruta za video i thumbnail 
+// statički pristup video fajlovima (video_path koristi ovo)
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+
+app.use("/api/videos", videosRoutes);
+app.use("/api/thumbnails", thumbnailsRoutes);
+
+// error handler (da vraća poruku)
+app.use((err, req, res, next) => {
+  const status = err.status || 500;
+  res.status(status).json({
+    message: err.message || "Server error",
+  });
+});
+
+app.listen(PORT, () => console.log(`Backend running on ${PORT}`));

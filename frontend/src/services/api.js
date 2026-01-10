@@ -35,3 +35,11 @@ export const getUserProfile = async (userId) => {
   if (!res.ok) throw new Error(data.error || 'Failed to fetch user profile');
   return data;
 }
+
+
+export const getVideoById = async (id) => {
+  const res = await fetch(`${BASE_URL}/videos/${id}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.message || data.error || "Video nije pronađen");
+  return data;
+};
