@@ -64,7 +64,7 @@ export default function VideoWatch() {
         }
 
         setVideo(data);
-        setLikesCount(data.likes || 0);
+        setLikesCount(Number(data.likes) || 0);
       } catch (e) {
         alert("Greška pri učitavanju videa.");
         navigate("/");
