@@ -281,7 +281,7 @@ app.get("/api/videos/:id", async (req, res) => {
   try {
     const result = await pool.query(
       `
-      SELECT v.id, v.title, v.description, v.video_path, v.thumbnail, v.created_at,
+      SELECT v.id, v.title, v.description, v.video_path, v.thumbnail, v.views, v.created_at,
              u.id as user_id, u.username, u.first_name, u.last_name
       FROM videos v
       JOIN users u ON v.user_id = u.id

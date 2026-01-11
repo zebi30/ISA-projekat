@@ -119,7 +119,7 @@ export default function UploadVideoPage() {
         <button
           type="submit"
           style={{
-            background: "#ff4d4f",
+            background: "#439cfb",
             color: "white",
             border: "none",
             padding: "10px 14px",
@@ -128,7 +128,7 @@ export default function UploadVideoPage() {
             fontWeight: 600,
           }}
         >
-          🎥 Upload
+          Upload
         </button>
 
         {msg && <div>{msg}</div>}

@@ -12,7 +12,7 @@ export default function VideoWatch() {
     (async () => {
       setLoading(true);
       try {
-        const res = await fetch(`http://localhost:5000/api/videos/${id}`);
+        const res = await fetch(`http://localhost:5000/api/videos/${id}/watch`, { method: "POST" });
         const data = await res.json().catch(() => ({}));
 
         if (!res.ok) {
@@ -80,6 +80,10 @@ export default function VideoWatch() {
         >
           ← Nazad
         </button>
+
+        <div style={{ marginTop: 8, color: "#444" }}>
+            Broj pregleda: {video.views ?? 0}
+        </div>
       </div>
     </div>
   );
