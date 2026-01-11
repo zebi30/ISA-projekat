@@ -6,7 +6,7 @@ export default function Input({ label, type = 'text', value, onChange, name }) {
       <label style={{ display: 'block', marginBottom: '5px' }}>{label}</label>
       <input
         type={type}
-        name={name}          // ✅ add this
+        name={name}          
         value={value}
         onChange={onChange}
         style={{
@@ -14,6 +14,7 @@ export default function Input({ label, type = 'text', value, onChange, name }) {
           padding: '10px',
           borderRadius: '5px',
           border: '1px solid #ccc',
+          boxSizing: 'border-box',
         }}
       />
     </div>
