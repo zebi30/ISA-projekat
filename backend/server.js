@@ -5,10 +5,10 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { Pool } = require('pg');
 const nodemailer = require('nodemailer');
-const rateLimit = require('express-rate-limit');
 const crypto = require('crypto');
 const path = require("path");
 const commentCache = require('./services/commentCache');
+const rateLimiter = require('./middlewares/rateLimiter');
 
 const videosRoutes = require("./routes/videos");
 const thumbnailsRoutes = require("./routes/thumbnails");
@@ -21,12 +21,11 @@ app.use(express.json());
 // PostgreSQL pool
 const pool = require("./pool");
 
-// Rate limiter (5 requests per minute per IP)
-const loginLimiter = rateLimit({
+// Redis-based rate limiter with sliding window (5 requests per minute per IP)
+const loginLimiter = rateLimiter.createLimiter({
   windowMs: 60 * 1000,
   max: 5,
-  standardHeaders: true,
-  legacyHeaders: false,
+  keyGenerator: (req) => req.ip,
   handler: (req, res) => {
     res.status(429).json({
       error: 'Previše pokušaja prijave. Pokušajte ponovo za minut.'
@@ -144,7 +143,8 @@ const authMiddleware = (req, res, next) => {
 app.get('/api/videos', async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT v.id, v.title, v.description, v.thumbnail, v.created_at, u.id as user_id, u.username, u.first_name, u.last_name
+      SELECT v.id, v.title, v.description, v.thumbnail, v.created_at, v.likes, v.views,
+             u.id as user_id, u.username, u.first_name, u.last_name
       FROM videos v
       JOIN users u ON v.user_id = u.id
       ORDER BY v.created_at DESC
@@ -305,12 +305,24 @@ app.post('/api/videos/:id/like', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Vec ste lajkovali ovaj video.' });
     }
 
+    // Insert like and increment likes column
+    await pool.query('BEGIN');
+    
     const result = await pool.query(
       'INSERT INTO likes (user_id, video_id) VALUES ($1, $2) RETURNING *',
       [userId, id]
     );
+    
+    await pool.query(
+      'UPDATE videos SET likes = likes + 1 WHERE id = $1',
+      [id]
+    );
+    
+    await pool.query('COMMIT');
+    
     res.status(201).json(result.rows[0]);
   } catch (err) {
+    await pool.query('ROLLBACK');
     console.error(err);
     res.status(500).json({ error: 'Greska pri lajkovanju videa.' });
   }
@@ -322,17 +334,28 @@ app.delete('/api/videos/:id/like', authMiddleware, async (req, res) => {
   const userId = req.user.id;
 
   try {
+    await pool.query('BEGIN');
+    
     const result = await pool.query(
       'DELETE FROM likes WHERE user_id = $1 AND video_id = $2 RETURNING *',
       [userId, id]
     );
 
     if (result.rows.length === 0) {
+      await pool.query('ROLLBACK');
       return res.status(404).json({ error: 'Niste lajkovali ovaj video.' });
     }
 
+    await pool.query(
+      'UPDATE videos SET likes = GREATEST(likes - 1, 0) WHERE id = $1',
+      [id]
+    );
+    
+    await pool.query('COMMIT');
+
     res.json({ message: 'Lajk uklonjen.' });
   } catch (err) {
+    await pool.query('ROLLBACK');
     console.error(err);
     res.status(500).json({ error: 'Greska pri uklanjanju lajka.' });
   }
@@ -346,7 +369,42 @@ app.get("/api/videos/:id", async (req, res) => {
   try {
     const result = await pool.query(
       `
-      SELECT v.id, v.title, v.description, v.video_path, v.thumbnail, v.views, v.created_at,
+      SELECT v.id, v.title, v.description, v.video_path, v.thumbnail, v.views, v.likes, v.created_at,
+             u.id as user_id, u.username, u.first_name, u.last_name
+      FROM videos v
+      JOIN users u ON v.user_id = u.id
+      WHERE v.id = $1
+      `,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: "Video nije pronadjen" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// Watch video endpoint - increments views count
+app.post("/api/videos/:id/watch", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).json({ message: "Invalid video id" });
+
+  try {
+    // Increment views
+    await pool.query(
+      'UPDATE videos SET views = views + 1 WHERE id = $1',
+      [id]
+    );
+
+    // Get video data
+    const result = await pool.query(
+      `
+      SELECT v.id, v.title, v.description, v.video_path, v.thumbnail, v.views, v.likes, v.created_at,
              u.id as user_id, u.username, u.first_name, u.last_name
       FROM videos v
       JOIN users u ON v.user_id = u.id
