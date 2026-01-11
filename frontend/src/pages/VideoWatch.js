@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { getVideoComments, postComment } from "../services/api";
+import { getVideoComments, postComment, likeVideo, unlikeVideo } from "../services/api";
 
 export default function VideoWatch() {
   const { id } = useParams();
@@ -20,9 +20,34 @@ export default function VideoWatch() {
   const [submitting, setSubmitting] = useState(false);
   const [commentError, setCommentError] = useState('');
 
+  // Like state
+  const [isLiked, setIsLiked] = useState(false);
+  const [likesCount, setLikesCount] = useState(0);
+  const [likeLoading, setLikeLoading] = useState(false);
+
   // Check if user is logged in
   const token = localStorage.getItem('token');
   const isLoggedIn = !!token;
+
+  // Check if user has liked the video
+  const checkLikeStatus = useCallback(async () => {
+    if (!isLoggedIn || !token || !id) return;
+    
+    try {
+      const res = await fetch(`http://localhost:5000/api/videos/${id}/like/check`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setIsLiked(data.liked);
+        console.log('Like status checked:', data.liked);
+      }
+    } catch (err) {
+      console.error('Error checking like status:', err);
+    }
+  }, [id, isLoggedIn, token]);
 
   // Load video
   useEffect(() => {
@@ -39,6 +64,7 @@ export default function VideoWatch() {
         }
 
         setVideo(data);
+        setLikesCount(Number(data.likes) || 0);
       } catch (e) {
         alert("Greška pri učitavanju videa.");
         navigate("/");
@@ -47,6 +73,26 @@ export default function VideoWatch() {
       }
     })();
   }, [id, navigate]);
+
+  // Check like status when video loads or login status changes
+  useEffect(() => {
+    console.log('Like status useEffect triggered', { 
+      video: !!video, 
+      isLoggedIn, 
+      hasToken: !!token,
+      videoId: id 
+    });
+    
+    if (video && isLoggedIn && token) {
+      console.log('Checking like status for video:', id);
+      checkLikeStatus();
+    } else if (!isLoggedIn) {
+      console.log('User not logged in, setting isLiked to false');
+      setIsLiked(false);
+    } else {
+      console.log('Conditions not met for checking like status');
+    }
+  }, [id, video, isLoggedIn, token, checkLikeStatus]);
 
   // Load comments
   useEffect(() => {
@@ -63,6 +109,41 @@ export default function VideoWatch() {
       console.error('Error loading comments:', err);
     } finally {
       setCommentsLoading(false);
+    }
+  };
+
+  // Handle like/unlike
+  const handleLike = async () => {
+    console.log('handleLike called, isLiked:', isLiked);
+    
+    if (!isLoggedIn) {
+      alert('Morate se prijaviti kako biste lajkovali video.');
+      navigate('/login');
+      return;
+    }
+
+    setLikeLoading(true);
+    try {
+      if (isLiked) {
+        console.log('Unliking video...');
+        await unlikeVideo(id, token);
+        setIsLiked(false);
+        setLikesCount(prev => Math.max(0, prev - 1));
+        console.log('Video unliked successfully');
+      } else {
+        console.log('Liking video...');
+        await likeVideo(id, token);
+        setIsLiked(true);
+        setLikesCount(prev => prev + 1);
+        console.log('Video liked successfully');
+      }
+    } catch (err) {
+      console.error('Error in handleLike:', err);
+      alert(err.message);
+      // Refresh like status from server on error
+      checkLikeStatus();
+    } finally {
+      setLikeLoading(false);
     }
   };
 
@@ -146,22 +227,45 @@ export default function VideoWatch() {
       )}
 
       <div style={{ marginTop: 16 }}>
-        <button
-          onClick={() => navigate("/")}
-          style={{
-            padding: "10px 14px",
-            borderRadius: 10,
-            border: "1px solid #ddd",
-            cursor: "pointer",
-            background: "white",
-            fontWeight: 600
-          }}
-        >
-          ← Nazad
-        </button>
+        <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: 12 }}>
+          <button
+            onClick={() => navigate("/")}
+            style={{
+              padding: "10px 14px",
+              borderRadius: 10,
+              border: "1px solid #ddd",
+              cursor: "pointer",
+              background: "white",
+              fontWeight: 600
+            }}
+          >
+            ← Nazad
+          </button>
 
-        <div style={{ marginTop: 8, color: "#444" }}>
-            Broj pregleda: {video.views ?? 0}
+          <button
+            onClick={handleLike}
+            disabled={likeLoading}
+            style={{
+              padding: "10px 20px",
+              borderRadius: 10,
+              border: isLiked ? "2px solid #e91e63" : "1px solid #ddd",
+              cursor: likeLoading ? "not-allowed" : "pointer",
+              background: isLiked ? "#ffe4ec" : "white",
+              fontWeight: 600,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              color: isLiked ? "#e91e63" : "#666",
+              transition: 'all 0.2s',
+              fontSize: '14px'
+            }}
+          >
+            {isLiked ? "❤️" : "♡"} {likesCount} {isLiked ? "Lajk-ova" : "Lajk-ova"}
+          </button>
+        </div>
+
+        <div style={{ color: "#666", fontSize: '14px' }}>
+          👁 {video.views ?? 0} pregleda
         </div>
       </div>
 
