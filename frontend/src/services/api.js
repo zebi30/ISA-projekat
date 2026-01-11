@@ -65,3 +65,43 @@ export const postComment = async (videoId, content, token) => {
   if (!res.ok) throw new Error(data.error || 'Failed to post comment');
   return data;
 };
+
+// Like a video (requires authentication)
+export const likeVideo = async (videoId, token) => {
+  const res = await fetch(`${BASE_URL}/videos/${videoId}/like`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    }
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to like video');
+  return data;
+};
+
+// Unlike a video (requires authentication)
+export const unlikeVideo = async (videoId, token) => {
+  const res = await fetch(`${BASE_URL}/videos/${videoId}/like`, {
+    method: 'DELETE',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    }
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to unlike video');
+  return data;
+};
+
+// Check if user has liked a video (requires authentication)
+export const checkIfLiked = async (videoId, token) => {
+  const res = await fetch(`${BASE_URL}/videos/${videoId}/like/check`, {
+    headers: {
+      'Authorization': `Bearer ${token}`
+    }
+  });
+  const data = await res.json();
+  if (!res.ok) return { liked: false };
+  return data;
+};

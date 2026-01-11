@@ -423,6 +423,24 @@ app.post('/api/videos/:id/like', authMiddleware, async (req, res) => {
   }
 });
 
+// Check if user has liked a video
+app.get('/api/videos/:id/like/check', authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.id;
+
+  try {
+    const result = await pool.query(
+      'SELECT * FROM likes WHERE user_id = $1 AND video_id = $2',
+      [userId, id]
+    );
+
+    res.json({ liked: result.rows.length > 0 });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Greska pri proveri lajka.' });
+  }
+});
+
 // Delete the like
 app.delete('/api/videos/:id/like', authMiddleware, async (req, res) => {
   const { id } = req.params;
@@ -522,6 +540,90 @@ app.post("/api/videos/:id/watch", async (req, res) => {
 //Kreiranje ruta za video i thumbnail 
 // statički pristup video fajlovima (video_path koristi ovo)
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+
+// IMPORTANT: Specific routes MUST come BEFORE generic app.use("/api/videos", videosRoutes)
+// Otherwise videosRoutes will catch all /api/videos/* routes
+
+// Check if user has liked a video
+app.get('/api/videos/:id/like/check', authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.id;
+
+  try {
+    const result = await pool.query(
+      'SELECT * FROM likes WHERE user_id = $1 AND video_id = $2',
+      [userId, id]
+    );
+
+    res.json({ liked: result.rows.length > 0 });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Greska pri proveri lajka.' });
+  }
+});
+
+// Get a singular video via id (public)
+app.get("/api/videos/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).json({ message: "Invalid video id" });
+
+  try {
+    const result = await pool.query(
+      `
+      SELECT v.id, v.title, v.description, v.video_path, v.thumbnail, v.views, v.likes, v.created_at,
+             u.id as user_id, u.username, u.first_name, u.last_name
+      FROM videos v
+      JOIN users u ON v.user_id = u.id
+      WHERE v.id = $1
+      `,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: "Video nije pronadjen" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// Watch video endpoint - increments views count
+app.post("/api/videos/:id/watch", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).json({ message: "Invalid video id" });
+
+  try {
+    // Increment views
+    await pool.query(
+      'UPDATE videos SET views = views + 1 WHERE id = $1',
+      [id]
+    );
+
+    // Get video data
+    const result = await pool.query(
+      `
+      SELECT v.id, v.title, v.description, v.video_path, v.thumbnail, v.views, v.likes, v.created_at,
+             u.id as user_id, u.username, u.first_name, u.last_name
+      FROM videos v
+      JOIN users u ON v.user_id = u.id
+      WHERE v.id = $1
+      `,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: "Video nije pronadjen" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
 
 app.use("/api/videos", videosRoutes);
 app.use("/api/thumbnails", thumbnailsRoutes);
