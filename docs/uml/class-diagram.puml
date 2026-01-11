@@ -1,0 +1,63 @@
+@startuml
+' --- layout ---
+left to right direction
+skinparam linetype ortho
+skinparam nodesep 80
+skinparam ranksep 70
+
+' --- make relationship labels easier to read ---
+skinparam ArrowThickness 2
+skinparam ArrowFontSize 16
+
+' (optional) overall font a bit bigger
+skinparam DefaultFontSize 14
+
+
+class User {
+  +id: int
+  +email: string
+  +username: string
+  +passwordHash: string
+  +firstName: string
+  +lastName: string
+  +address: string
+  +isActive: boolean
+  +activation_token: string?
+  +created_at: datetime
+}
+
+class Video {
+  +id: int
+  +user_id: int
+  +title: string
+  +description: string
+  +video_path: string
+  +thumbnail: string
+  +created_at: datetime
+  +tags: string
+  +location: string
+  +views: long
+  +likes: long
+}
+
+class Comment {
+  +id: int
+  +user_id: int
+  +video_id: int
+  +content: string
+  +created_at: datetime
+}
+
+class Like {
+  +id: int
+  +createdAt: datetime
+}
+
+
+User "1" -down-  "0..*" Video : posts     
+Video "1" -down- "0..*" Comment : has
+User  "1" -down- "0..*" Comment : writes
+
+Video "1" -down- "0..*" Like : receives
+User  "1" -down- "0..*" Like : gives
+@enduml
