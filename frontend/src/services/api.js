@@ -34,12 +34,34 @@ export const getUserProfile = async (userId) => {
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Failed to fetch user profile');
   return data;
-}
-
+};
 
 export const getVideoById = async (id) => {
   const res = await fetch(`${BASE_URL}/videos/${id}`);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.message || data.error || "Video nije pronađen");
+  return data;
+};
+
+// Get comments for a video
+export const getVideoComments = async (videoId, page = 1, limit = 60) => {
+  const res = await fetch(`${BASE_URL}/videos/${videoId}/comments?page=${page}&limit=${limit}`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to fetch comments');
+  return data;
+};
+
+// Post a comment (requires authentication)
+export const postComment = async (videoId, content, token) => {
+  const res = await fetch(`${BASE_URL}/videos/${videoId}/comment`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    },
+    body: JSON.stringify({ content })
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to post comment');
   return data;
 };

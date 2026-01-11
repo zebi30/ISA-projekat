@@ -8,6 +8,7 @@ const nodemailer = require('nodemailer');
 const rateLimit = require('express-rate-limit');
 const crypto = require('crypto');
 const path = require("path");
+const commentCache = require('./services/commentCache');
 
 const videosRoutes = require("./routes/videos");
 const thumbnailsRoutes = require("./routes/thumbnails");
@@ -197,19 +198,73 @@ app.get('/api/users/:id/profile', async (req, res) => {
     res.status(500).json({ error: 'Greska pri ucitavanju profila.' });
   }
 });
+app.get('/api/videos/:id/comments', async (req, res) => {
+  const { id } = req.params;
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 6;
+  const offset = (page - 1) * limit;
 
-// COmment
+  try {
+    // Check Redis cache first
+    const cachedData = await commentCache.get(id, page, limit);
+    if (cachedData) {
+      return res.json(cachedData);
+    }
+
+    // If not in cache, fetch from database
+    console.log(`Cache MISS (Redis L2) for video ${id}, page ${page} - fetching from DB`);
+
+    // Total comment count
+    const countResult = await pool.query(
+      'SELECT COUNT(*) FROM comments WHERE video_id = $1',
+      [id]
+    );
+    const totalComments = parseInt(countResult.rows[0].count);
+
+    // Get comments with user info (sorted by date newest 1st)
+    const result = await pool.query(`
+      SELECT c.id, c.content, c.created_at, 
+             u.id as user_id, u.username, u.first_name, u.last_name
+      FROM comments c
+      JOIN users u ON c.user_id = u.id
+      WHERE c.video_id = $1
+      ORDER BY c.created_at DESC
+      LIMIT $2 OFFSET $3
+    `, [id, limit, offset]);
+
+    const responseData = {
+      comments: result.rows,
+      pagination: {
+        page,
+        limit,
+        totalComments,
+        totalPages: Math.ceil(totalComments / limit),
+        hasMore: page < Math.ceil(totalComments / limit)
+      }
+    };
+
+    // Store in REdis cache
+    await commentCache.set(id, page, limit, responseData);
+
+    res.json(responseData);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Greska pri ucitavanju komentara.' });
+  }
+});
+
+// Post comment with checks - invalidate redis cache after posting 
 app.post('/api/videos/:id/comment', authMiddleware, async (req, res) => {
   const { id } = req.params;
   const { content } = req.body;
   const userId = req.user.id;
 
   if (!content || content.trim().length === 0) {
-    return res.status(400).json({ error: 'Komentar ne može biti prazan.' });
+    return res.status(400).json({ error: 'Komentar ne moze biti prazan.' });
   }
 
-  if (content.length > 60) {
-    return res.status(400).json({ error: 'Komentar ne sme biti duži od 60 karaktera.' });
+  if (content.length > 150) {
+    return res.status(400).json({ error: 'Komentar ne sme biti duzi od 150 karaktera.' });
   }
 
   try {
@@ -217,11 +272,21 @@ app.post('/api/videos/:id/comment', authMiddleware, async (req, res) => {
       'INSERT INTO comments (user_id, video_id, content) VALUES ($1, $2, $3) RETURNING *',
       [userId, id, content]
     );
+
+    // Invalidate Redis cache for this video
+    await commentCache.invalidateVideo(id);
+
     res.status(201).json(result.rows[0]);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Greska pri dodavanju komentara.' });
   }
+});
+
+// Cache stats endpoint
+app.get('/api/cache/stats', async (req, res) => {
+  const stats = await commentCache.getStats();
+  res.json(stats);
 });
 
 // Like
@@ -273,7 +338,7 @@ app.delete('/api/videos/:id/like', authMiddleware, async (req, res) => {
   }
 });
 
-// Get single video by id (public)
+// Get a singular video via id (public)
 app.get("/api/videos/:id", async (req, res) => {
   const id = Number(req.params.id);
   if (!id) return res.status(400).json({ message: "Invalid video id" });
@@ -291,7 +356,7 @@ app.get("/api/videos/:id", async (req, res) => {
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ message: "Video nije pronađen" });
+      return res.status(404).json({ message: "Video nije pronadjen" });
     }
 
     res.json(result.rows[0]);
@@ -300,7 +365,6 @@ app.get("/api/videos/:id", async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
-
 
 //Kreiranje ruta za video i thumbnail 
 // statički pristup video fajlovima (video_path koristi ovo)
