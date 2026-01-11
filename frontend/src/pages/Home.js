@@ -68,9 +68,9 @@ export default function Home() {
           </button>
           <button
             onClick={handleUploadClick}
-            style={{ padding: "10px 20px", cursor: "pointer", background: "#ff4d4f", color: "white", border: "none", borderRadius: 6, fontWeight: 700 }}
+            style={{ padding: "10px 20px", cursor: "pointer", background: "#439cfb", color: "white", border: "none", borderRadius: 6, fontWeight: 700 }}
           >
-            🎥 Upload
+            Upload
           </button>
         </div>
       </div>

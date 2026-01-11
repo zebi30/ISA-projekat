@@ -186,4 +186,27 @@ router.get("/:id", async (req, res) => {
   }
 });
 
+// POST /api/videos/:id/view (public) - atomic increment i vraca novi views
+router.post("/:id/view", async (req, res) => {
+  const videoId = Number(req.params.id);
+  if (!videoId) return res.status(400).json({ message: "Invalid video id" });
+
+  try {
+    const r = await pool.query(
+      `UPDATE videos
+       SET views = views + 1
+       WHERE id = $1
+       RETURNING views`,
+      [videoId]
+    );
+
+    if (r.rowCount === 0) return res.status(404).json({ message: "Video not found" });
+
+    res.json({ views: r.rows[0].views });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
 module.exports = router;
