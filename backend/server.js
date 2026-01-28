@@ -474,6 +474,197 @@ app.delete('/api/videos/:id/like', authMiddleware, async (req, res) => {
   }
 });
 
+// GET /api/videos/map - MORA BITI PRE /:id rute!
+// Tile helper funkcija - izračunava tile koordinate na osnovu lat/lng
+function getTileKey(lat, lng, tileSize = 0.1) {
+  const tileX = Math.floor(lng / tileSize);
+  const tileY = Math.floor(lat / tileSize);
+  return `tile_${tileX}_${tileY}`;
+}
+
+// GET /api/videos/map/count - brz count videa sa lokacijom
+app.get('/api/videos/map/count', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT COUNT(*) as count 
+       FROM videos 
+       WHERE location IS NOT NULL`
+    );
+    res.json({ count: parseInt(result.rows[0].count) });
+  } catch (e) {
+    console.error('Error counting videos with location:', e);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// GET /api/videos/map/bounds - min/max koordinate svih videa (za auto-centriranje)
+app.get('/api/videos/map/bounds', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT 
+        MIN((location->>'latitude')::numeric) as minLat,
+        MAX((location->>'latitude')::numeric) as maxLat,
+        MIN((location->>'longitude')::numeric) as minLng,
+        MAX((location->>'longitude')::numeric) as maxLng,
+        COUNT(*) as count
+       FROM videos 
+       WHERE location IS NOT NULL`
+    );
+    
+    const bounds = result.rows[0];
+    
+    if (!bounds.minlat) {
+      return res.json({ bounds: null, count: 0 });
+    }
+
+    res.json({ 
+      bounds: {
+        minLat: parseFloat(bounds.minlat),
+        maxLat: parseFloat(bounds.maxlat),
+        minLng: parseFloat(bounds.minlng),
+        maxLng: parseFloat(bounds.maxlng),
+      },
+      count: parseInt(bounds.count)
+    });
+  } catch (e) {
+    console.error('Error getting video bounds:', e);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// GET /api/videos/map - tile-based loading sa bounds
+app.get('/api/videos/map', async (req, res) => {
+  try {
+    const { minLat, maxLat, minLng, maxLng, tileSize = 0.1 } = req.query;
+
+    // Ako nema bounds parametara, vrati sve (fallback za kompatibilnost)
+    if (!minLat || !maxLat || !minLng || !maxLng) {
+      const result = await pool.query(
+        `SELECT 
+          v.id, 
+          v.title, 
+          v.location,
+          v.views,
+          v.created_at,
+          u.username
+         FROM videos v
+         LEFT JOIN users u ON v.user_id = u.id
+         WHERE v.location IS NOT NULL
+         ORDER BY v.created_at DESC
+         LIMIT 1000`
+      );
+
+      return res.json({ 
+        videos: result.rows,
+        count: result.rows.length,
+        cached: false
+      });
+    }
+
+    // Parse bounds
+    const bounds = {
+      minLat: parseFloat(minLat),
+      maxLat: parseFloat(maxLat),
+      minLng: parseFloat(minLng),
+      maxLng: parseFloat(maxLng)
+    };
+
+    // Validacija
+    if (isNaN(bounds.minLat) || isNaN(bounds.maxLat) || 
+        isNaN(bounds.minLng) || isNaN(bounds.maxLng)) {
+      return res.status(400).json({ message: "Invalid bounds parameters" });
+    }
+
+    // Generiši tile keys za sve tiles u vidljivom području
+    const tiles = [];
+    const tileSizeNum = parseFloat(tileSize);
+    
+    for (let lat = Math.floor(bounds.minLat / tileSizeNum) * tileSizeNum; 
+         lat <= bounds.maxLat; 
+         lat += tileSizeNum) {
+      for (let lng = Math.floor(bounds.minLng / tileSizeNum) * tileSizeNum; 
+           lng <= bounds.maxLng; 
+           lng += tileSizeNum) {
+        tiles.push(getTileKey(lat, lng, tileSizeNum));
+      }
+    }
+
+    // Pokušaj da učitaš iz cache-a (Redis L2)
+    const cacheKey = `map_tiles:${tiles.join(',')}`;
+    let cachedData = null;
+    
+    try {
+      if (commentCache.redisClient && commentCache.redisClient.isReady) {
+        const cached = await commentCache.redisClient.get(cacheKey);
+        if (cached) {
+          cachedData = JSON.parse(cached);
+          console.log(`[CACHE HIT] Map tiles: ${tiles.length} tiles`);
+        }
+      }
+    } catch (cacheErr) {
+      console.error('Cache read error:', cacheErr);
+    }
+
+    if (cachedData) {
+      return res.json({ 
+        ...cachedData,
+        cached: true,
+        tiles: tiles.length
+      });
+    }
+
+    // Query sa bounding box filterom
+    const result = await pool.query(
+      `SELECT 
+        v.id, 
+        v.title, 
+        v.location,
+        v.views,
+        v.created_at,
+        u.username
+       FROM videos v
+       LEFT JOIN users u ON v.user_id = u.id
+       WHERE v.location IS NOT NULL
+         AND (v.location->>'latitude')::numeric >= $1
+         AND (v.location->>'latitude')::numeric <= $2
+         AND (v.location->>'longitude')::numeric >= $3
+         AND (v.location->>'longitude')::numeric <= $4
+       ORDER BY v.created_at DESC
+       LIMIT 500`,
+      [bounds.minLat, bounds.maxLat, bounds.minLng, bounds.maxLng]
+    );
+
+    const responseData = {
+      videos: result.rows,
+      count: result.rows.length,
+      bounds,
+      tiles: tiles.length
+    };
+
+    // Keširanje rezultata (5 minuta TTL)
+    try {
+      if (commentCache.redisClient && commentCache.redisClient.isReady) {
+        await commentCache.redisClient.setEx(
+          cacheKey, 
+          300, // 5 minuta
+          JSON.stringify(responseData)
+        );
+        console.log(`[CACHE SET] Map tiles: ${tiles.length} tiles, ${result.rows.length} videos`);
+      }
+    } catch (cacheErr) {
+      console.error('Cache write error:', cacheErr);
+    }
+
+    res.json({ 
+      ...responseData,
+      cached: false
+    });
+  } catch (e) {
+    console.error('Error fetching video locations:', e);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
 // Get a singular video via id (public)
 app.get("/api/videos/:id", async (req, res) => {
   const id = Number(req.params.id);

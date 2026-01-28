@@ -1,5 +1,29 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+
+// Fix za default ikone
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: require('leaflet/dist/images/marker-icon-2x.png'),
+  iconUrl: require('leaflet/dist/images/marker-icon.png'),
+  shadowUrl: require('leaflet/dist/images/marker-shadow.png'),
+});
+
+// Komponenta za klik na mapu
+function LocationMarker({ position, setPosition }) {
+  useMapEvents({
+    click(e) {
+      setPosition(e.latlng);
+    },
+  });
+
+  return position === null ? null : (
+    <Marker position={position} />
+  );
+}
 
 export default function UploadVideoPage() {
   const navigate = useNavigate();
@@ -7,7 +31,8 @@ export default function UploadVideoPage() {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [tags, setTags] = useState("");
-  const [location, setLocation] = useState("");
+  const [locationPosition, setLocationPosition] = useState(null); // {lat, lng}
+  const [locationName, setLocationName] = useState(""); // opciono ime
   const [video, setVideo] = useState(null);
   const [thumbnail, setThumbnail] = useState(null);
 
@@ -29,7 +54,19 @@ export default function UploadVideoPage() {
     fd.append("title", title);
     fd.append("description", description);
     fd.append("tags", tags);
-    if (location.trim()) fd.append("location", location);
+    
+    // Šalji lokaciju kao JSON objekat
+    if (locationPosition) {
+      const locationObj = {
+        latitude: locationPosition.lat,
+        longitude: locationPosition.lng,
+      };
+      if (locationName.trim()) {
+        locationObj.address = locationName.trim();
+      }
+      fd.append("location", JSON.stringify(locationObj));
+    }
+    
     fd.append("video", video);
     fd.append("thumbnail", thumbnail);
 
@@ -61,7 +98,8 @@ export default function UploadVideoPage() {
       setTitle("");
       setDescription("");
       setTags("");
-      setLocation("");
+      setLocationPosition(null);
+      setLocationName("");
       setVideo(null);
       setThumbnail(null);
     } catch (err) {
@@ -92,11 +130,68 @@ export default function UploadVideoPage() {
           onChange={(e) => setTags(e.target.value)}
         />
 
-        <input
-          placeholder='Lokacija JSON (opciono) npr {"lat":45.26,"lng":19.83,"name":"NS"}'
-          value={location}
-          onChange={(e) => setLocation(e.target.value)}
-        />
+        {/* Mapa za odabir lokacije */}
+        <div style={{ marginTop: 12 }}>
+          <label style={{ fontWeight: 600, marginBottom: 8, display: 'block' }}>
+            Lokacija (opciono) - Klikni na mapu da odabereš lokaciju:
+          </label>
+          
+          <div style={{ height: 300, border: '2px solid #ddd', borderRadius: 8, overflow: 'hidden', marginBottom: 8 }}>
+            <MapContainer
+              center={[44.0165, 21.0059]} // Centar Srbije
+              zoom={7}
+              style={{ height: '100%', width: '100%' }}
+            >
+              <TileLayer
+                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              />
+              <LocationMarker position={locationPosition} setPosition={setLocationPosition} />
+            </MapContainer>
+          </div>
+          
+          {locationPosition && (
+            <div style={{ padding: 12, background: '#f0f0f0', borderRadius: 8, fontSize: 14 }}>
+              <strong>Odabrana lokacija:</strong><br/>
+              Latitude: {locationPosition.lat.toFixed(6)}<br/>
+              Longitude: {locationPosition.lng.toFixed(6)}
+              
+              <input
+                type="text"
+                placeholder="Naziv lokacije (opciono, npr. Beograd)"
+                value={locationName}
+                onChange={(e) => setLocationName(e.target.value)}
+                style={{ 
+                  marginTop: 8, 
+                  width: '100%', 
+                  padding: 8,
+                  border: '1px solid #ccc',
+                  borderRadius: 4
+                }}
+              />
+              
+              <button
+                type="button"
+                onClick={() => {
+                  setLocationPosition(null);
+                  setLocationName("");
+                }}
+                style={{
+                  marginTop: 8,
+                  padding: '6px 12px',
+                  background: '#f44336',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: 4,
+                  cursor: 'pointer',
+                  fontSize: 12
+                }}
+              >
+                Ukloni lokaciju
+              </button>
+            </div>
+          )}
+        </div>
 
         <div>
           <div>Thumbnail (slika):</div>
