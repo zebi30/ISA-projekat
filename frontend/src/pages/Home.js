@@ -94,6 +94,25 @@ export default function Home() {
           </h1>
           
           <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+            <button 
+              onClick={() => navigate('/map')}
+              style={{ 
+                padding: '10px 20px', 
+                cursor: 'pointer', 
+                background: '#4caf50', 
+                color: 'white', 
+                border: 'none', 
+                borderRadius: '8px', 
+                fontWeight: 600,
+                fontSize: '14px',
+                transition: 'background 0.2s'
+              }}
+              onMouseOver={(e) => e.target.style.background = '#45a049'}
+              onMouseOut={(e) => e.target.style.background = '#4caf50'}
+            >
+              🗺️ Mapa videa
+            </button>
+            
             {isLoggedIn ? (
               <>
                 <button 
