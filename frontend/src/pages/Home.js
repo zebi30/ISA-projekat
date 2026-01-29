@@ -7,17 +7,18 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const navigate = useNavigate();
+  const [period, setPeriod] = useState('all'); // all | 30d | year
   
   const token = localStorage.getItem('token');
   const isLoggedIn = !!token;
 
   useEffect(() => {
     fetchVideos();
-  }, []);
+  }, [period]);
 
   const fetchVideos = async () => {
     try {
-      const data = await getPublicVideos();
+      const data = await getPublicVideos(period);
       setVideos(data);
     } catch (err) {
       setError(err.message);
@@ -213,6 +214,31 @@ export default function Home() {
           Najnoviji videi
         </h2>
         
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 16 }}>
+          <span style={{ fontSize: 14, color: '#555', fontWeight: 600 }}>Period:</span>
+
+          <select
+            value={period}
+            onChange={(e) => {
+              setLoading(true);
+              setPeriod(e.target.value);
+            }}
+            style={{
+              padding: '8px 10px',
+              borderRadius: 8,
+              border: '1px solid #ddd',
+              background: 'white',
+              cursor: 'pointer',
+              fontWeight: 600
+            }}
+          >
+            <option value="all">Sve vreme</option>
+            <option value="30d">Poslednjih 30 dana</option>
+            <option value="year">Tekuća godina</option>
+          </select>
+        </div>
+
+
         {videos.length === 0 ? (
           <div style={{ 
             textAlign: 'center', 

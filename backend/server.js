@@ -234,16 +234,30 @@ const authMiddleware = (req, res, next) => {
   }
 };
 
-// All videos sorted by date (newest first)
+// All videos sorted by date (newest first)   +period filter
 app.get('/api/videos', async (req, res) => {
+  const period = String(req.query.period || 'all'); // all | 30d | year
+
+  let where = '';
+  const params = [];
+
+  if (period === '30d') {
+    where = `WHERE v.created_at >= (NOW() - INTERVAL '30 days')`;
+  } else if (period === 'year') {
+    where = `WHERE v.created_at >= date_trunc('year', NOW())`;
+  } else if (period !== 'all') {
+    return res.status(400).json({ error: 'Invalid period. Use all | 30d | year' });
+  }
+
   try {
     const result = await pool.query(`
       SELECT v.id, v.title, v.description, v.thumbnail, v.created_at, v.likes, v.views,
              u.id as user_id, u.username, u.first_name, u.last_name
       FROM videos v
       JOIN users u ON v.user_id = u.id
+      ${where}
       ORDER BY v.created_at DESC
-    `);
+    `, params);
     res.json(result.rows);
   } catch (err) {
     console.error(err);

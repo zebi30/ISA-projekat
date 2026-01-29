@@ -22,8 +22,11 @@ export const registerUser = async (user) => {
   return data;
 };
 
-export const getPublicVideos = async () => {
-  const res = await fetch(`${BASE_URL}/videos`);
+export const getPublicVideos = async (period = 'all') => {
+  const qs = new URLSearchParams();
+  if (period && period !== 'all') qs.set('period', period);
+
+  const res = await fetch(`${BASE_URL}/videos?${qs.toString()}`);
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Failed to fetch videos');
   return data;
