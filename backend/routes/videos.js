@@ -186,27 +186,34 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-// POST /api/videos/:id/view (public) - atomic increment i vraca novi views
-router.post("/:id/view", async (req, res) => {
+// POST /api/videos/:id/watch  (public) - uveca views i vraca video
+router.post("/:id/watch", async (req, res) => {
   const videoId = Number(req.params.id);
   if (!videoId) return res.status(400).json({ message: "Invalid video id" });
 
   try {
-    const r = await pool.query(
-      `UPDATE videos
-       SET views = views + 1
-       WHERE id = $1
-       RETURNING views`,
-      [videoId]
-    );
+    // 1 statement: atomic update 
+    const q = `
+      WITH upd AS (
+        UPDATE videos
+        SET views = views + 1
+        WHERE id = $1
+        RETURNING *
+      )
+      SELECT upd.*, u.username, u.first_name, u.last_name
+      FROM upd
+      JOIN users u ON u.id = upd.user_id
+    `;
 
-    if (r.rowCount === 0) return res.status(404).json({ message: "Video not found" });
+    const r = await pool.query(q, [videoId]);
+    if (r.rows.length === 0) return res.status(404).json({ message: "Video not found" });
 
-    res.json({ views: r.rows[0].views });
+    res.json(r.rows[0]);
   } catch (e) {
     console.error(e);
     res.status(500).json({ message: "Server error" });
   }
 });
+
 
 module.exports = router;
