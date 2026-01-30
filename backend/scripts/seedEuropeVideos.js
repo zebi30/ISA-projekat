@@ -1,6 +1,14 @@
-const pool = require('../pool');
+const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
+
+// Učitaj environment varijable
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+
+// Kreiraj pool direktno za skriptu
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+});
 
 // Evropa koordinate
 const EUROPE_BOUNDS = {
@@ -73,8 +81,8 @@ async function seedEuropeVideos() {
     if (testUser.rows.length === 0) {
       console.log('Kreiram test korisnika...');
       testUser = await client.query(
-        `INSERT INTO users (username, email, password_hash) 
-         VALUES ('test_europe', 'test_europe@example.com', '$2b$10$dummy.hash.for.testing.purposes.only.abc123') 
+        `INSERT INTO users (username, email, password, first_name, last_name, address) 
+         VALUES ('test_europe', 'test_europe@example.com', '$2b$10$dummy.hash.for.testing.purposes.only.abc123', 'Test', 'Europe', 'Test Address 123') 
          RETURNING id`
       );
     }
@@ -172,7 +180,7 @@ async function seedEuropeVideos() {
       }
 
       const query = `
-        INSERT INTO videos (user_id, title, description, video_path, thumbnail_path, location, views)
+        INSERT INTO videos (user_id, title, description, video_path, thumbnail, location, views)
         VALUES ${placeholders.join(', ')}
       `;
 
