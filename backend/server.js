@@ -10,6 +10,7 @@ const path = require("path");
 const commentCache = require('./services/commentCache');
 const rateLimiter = require('./middlewares/rateLimiter');
 const mapTileCache = require("./services/mapTileCache");
+const tileService = require('./services/tileService');
 
 const videosRoutes = require("./routes/videos");
 const thumbnailsRoutes = require("./routes/thumbnails");
@@ -496,6 +497,63 @@ function getTileKey(lat, lng, tileSize = 0.1) {
   const tileY = Math.floor(lat / tileSize);
   return `tile_${tileX}_${tileY}`;
 }
+
+// GET /api/videos/tiles - Tile sistem sa dinamičkim grid-om zavisno od zoom nivoa
+app.get('/api/videos/tiles', async (req, res) => {
+  const { zoomLevel, minLat, maxLat, minLng, maxLng } = req.query;
+
+  try {
+    // Validacija parametara
+    if (!zoomLevel || minLat === undefined || maxLat === undefined || 
+        minLng === undefined || maxLng === undefined) {
+      return res.status(400).json({ 
+        error: 'Nedostaju parametri: zoomLevel, minLat, maxLat, minLng, maxLng' 
+      });
+    }
+
+    // Učitaj sve videe sa lokacijom iz baze
+    const result = await pool.query(`
+      SELECT v.id, v.title, v.description, v.thumbnail, v.created_at,
+             COALESCE(v.likes, 0) as likes,
+             COALESCE(v.views, 0) as views,
+             v.location,
+             u.id as user_id, u.username, u.first_name, u.last_name
+      FROM videos v
+      JOIN users u ON v.user_id = u.id
+      WHERE v.location IS NOT NULL
+      ORDER BY v.created_at DESC
+    `);
+
+    const allVideos = result.rows;
+
+    // Primeni tile sistem
+    const bounds = {
+      minLat: parseFloat(minLat),
+      maxLat: parseFloat(maxLat),
+      minLng: parseFloat(minLng),
+      maxLng: parseFloat(maxLng)
+    };
+
+    const tileResult = tileService.getVideosForViewport(
+      allVideos,
+      bounds,
+      parseInt(zoomLevel)
+    );
+
+    res.json({
+      videos: tileResult.videos,
+      count: tileResult.count,
+      totalCount: allVideos.length,
+      zoomLevel: tileResult.zoomLevel,
+      tiles: tileResult.config,
+      message: `Prikazujem ${tileResult.count} od ${allVideos.length} videa (Zoom: ${zoomLevel})`
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Greška pri učitavanju tile videa.' });
+  }
+});
 
 // GET /api/videos/map/count - brz count videa sa lokacijom
 app.get('/api/videos/map/count', async (req, res) => {
