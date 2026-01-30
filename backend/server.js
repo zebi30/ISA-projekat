@@ -9,6 +9,7 @@ const crypto = require('crypto');
 const path = require("path");
 const commentCache = require('./services/commentCache');
 const rateLimiter = require('./middlewares/rateLimiter');
+const mapTileCache = require("./services/mapTileCache");
 
 const videosRoutes = require("./routes/videos");
 const thumbnailsRoutes = require("./routes/thumbnails");
@@ -234,16 +235,30 @@ const authMiddleware = (req, res, next) => {
   }
 };
 
-// All videos sorted by date (newest first)
+// All videos sorted by date (newest first)   +period filter
 app.get('/api/videos', async (req, res) => {
+  const period = String(req.query.period || 'all'); // all | 30d | year
+
+  let where = '';
+  const params = [];
+
+  if (period === '30d') {
+    where = `WHERE v.created_at >= (NOW() - INTERVAL '30 days')`;
+  } else if (period === 'year') {
+    where = `WHERE v.created_at >= date_trunc('year', NOW())`;
+  } else if (period !== 'all') {
+    return res.status(400).json({ error: 'Invalid period. Use all | 30d | year' });
+  }
+
   try {
     const result = await pool.query(`
       SELECT v.id, v.title, v.description, v.thumbnail, v.created_at, v.likes, v.views,
              u.id as user_id, u.username, u.first_name, u.last_name
       FROM videos v
       JOIN users u ON v.user_id = u.id
+      ${where}
       ORDER BY v.created_at DESC
-    `);
+    `, params);
     res.json(result.rows);
   } catch (err) {
     console.error(err);
@@ -532,11 +547,27 @@ app.get('/api/videos/map/bounds', async (req, res) => {
   }
 });
 
+function buildPeriodSql(period) {
+  if (period === "30d") return `AND v.created_at >= NOW() - INTERVAL '30 days'`;
+  if (period === "year") return `AND v.created_at >= date_trunc('year', NOW())`;
+  return "";
+}
+
+function getTileBounds(tileX, tileY, tileSize) {
+  const minLng = tileX * tileSize;
+  const maxLng = (tileX + 1) * tileSize;
+  const minLat = tileY * tileSize;
+  const maxLat = (tileY + 1) * tileSize;
+  return { minLat, maxLat, minLng, maxLng };
+}
+
 // GET /api/videos/map - tile-based loading sa bounds
 app.get('/api/videos/map', async (req, res) => {
   try {
-    const { minLat, maxLat, minLng, maxLng, tileSize = 0.1 } = req.query;
-
+    const { minLat, maxLat, minLng, maxLng, tileSize = 0.1, period = "all" } = req.query;
+    const periodStr = String(period || "all");
+    const tileSizeNum = Number(tileSize) || 0.1;
+    
     // Ako nema bounds parametara, vrati sve (fallback za kompatibilnost)
     if (!minLat || !maxLat || !minLng || !maxLng) {
       const result = await pool.query(
@@ -557,7 +588,10 @@ app.get('/api/videos/map', async (req, res) => {
       return res.json({ 
         videos: result.rows,
         count: result.rows.length,
-        cached: false
+        cached: false,
+        tiles: 0,
+        cachedTiles: 0,
+        missedTiles: 0
       });
     }
 
@@ -577,8 +611,6 @@ app.get('/api/videos/map', async (req, res) => {
 
     // Generiši tile keys za sve tiles u vidljivom području
     const tiles = [];
-    const tileSizeNum = parseFloat(tileSize);
-    
     for (let lat = Math.floor(bounds.minLat / tileSizeNum) * tileSizeNum; 
          lat <= bounds.maxLat; 
          lat += tileSizeNum) {
@@ -589,76 +621,96 @@ app.get('/api/videos/map', async (req, res) => {
       }
     }
 
-    // Pokušaj da učitaš iz cache-a (Redis L2)
-    const cacheKey = `map_tiles:${tiles.join(',')}`;
-    let cachedData = null;
+
     
-    try {
-      if (commentCache.redisClient && commentCache.redisClient.isReady) {
-        const cached = await commentCache.redisClient.get(cacheKey);
-        if (cached) {
-          cachedData = JSON.parse(cached);
-          console.log(`[CACHE HIT] Map tiles: ${tiles.length} tiles`);
-        }
+    const periodSql = buildPeriodSql(periodStr);
+
+    let hits = 0, misses = 0;
+    const collected = [];
+
+    for (const tileKey of tiles) {
+      // 1) cache lookup (per tile)
+      let tilePayload = null;
+      try {
+        tilePayload = await mapTileCache.getTile(tileSizeNum, tileKey, periodStr);
+      } catch (e) {
+        // ako redis padne, samo nastavi na DB
       }
-    } catch (cacheErr) {
-      console.error('Cache read error:', cacheErr);
+
+      if (tilePayload) {
+        hits++;
+        collected.push(...(tilePayload.videos || []));
+        continue;
+      }
+      
+      misses++;
+
+      // 2) tileKey -> tileX, tileY
+      const parts = tileKey.split("_"); // ["tile", "x", "y"]
+      const tileX = Number(parts[1]);
+      const tileY = Number(parts[2]);
+
+      if (Number.isNaN(tileX) || Number.isNaN(tileY)) {
+        continue;
+      }
+      
+      const tb = getTileBounds(tileX, tileY, tileSizeNum);
+
+      // 3) DB query za samo taj tile
+      const dbRes = await pool.query(
+        `
+        SELECT 
+          v.id, v.title, v.location, v.views, v.created_at, u.username
+        FROM videos v
+        LEFT JOIN users u ON v.user_id = u.id
+        WHERE v.location IS NOT NULL
+          ${periodSql}
+          AND (v.location->>'latitude')::numeric >= $1
+          AND (v.location->>'latitude')::numeric <  $2
+          AND (v.location->>'longitude')::numeric >= $3
+          AND (v.location->>'longitude')::numeric <  $4
+        ORDER BY v.created_at DESC
+        LIMIT 500
+        `,
+        [tb.minLat, tb.maxLat, tb.minLng, tb.maxLng]
+      );
+
+      const payloadToCache = {
+        tileKey,
+        videos: dbRes.rows,
+        count: dbRes.rows.length,
+        period: periodStr,
+        tileSize: tileSizeNum,
+        rebuiltAt: new Date().toISOString()
+      };
+
+      // 4) upisi u cache (24h)
+      try {
+        await mapTileCache.setTile(tileSizeNum, tileKey, periodStr, payloadToCache, 24 * 3600);
+      } catch (e) {}
+
+      collected.push(...dbRes.rows);
     }
 
-    if (cachedData) {
-      return res.json({ 
-        ...cachedData,
-        cached: true,
-        tiles: tiles.length
-      });
-    }
+    // de-dupe po id (jer tiles mogu da se "dodirnu" na granici)
+    const uniq = new Map();
+    for (const v of collected) uniq.set(v.id, v);
 
-    // Query sa bounding box filterom
-    const result = await pool.query(
-      `SELECT 
-        v.id, 
-        v.title, 
-        v.location,
-        v.views,
-        v.created_at,
-        u.username
-       FROM videos v
-       LEFT JOIN users u ON v.user_id = u.id
-       WHERE v.location IS NOT NULL
-         AND (v.location->>'latitude')::numeric >= $1
-         AND (v.location->>'latitude')::numeric <= $2
-         AND (v.location->>'longitude')::numeric >= $3
-         AND (v.location->>'longitude')::numeric <= $4
-       ORDER BY v.created_at DESC
-       LIMIT 500`,
-      [bounds.minLat, bounds.maxLat, bounds.minLng, bounds.maxLng]
-    );
+    const videos = Array.from(uniq.values())
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
-    const responseData = {
-      videos: result.rows,
-      count: result.rows.length,
+    return res.json({
+      videos,
+      count: videos.length,
       bounds,
-      tiles: tiles.length
-    };
-
-    // Keširanje rezultata (5 minuta TTL)
-    try {
-      if (commentCache.redisClient && commentCache.redisClient.isReady) {
-        await commentCache.redisClient.setEx(
-          cacheKey, 
-          300, // 5 minuta
-          JSON.stringify(responseData)
-        );
-        console.log(`[CACHE SET] Map tiles: ${tiles.length} tiles, ${result.rows.length} videos`);
-      }
-    } catch (cacheErr) {
-      console.error('Cache write error:', cacheErr);
-    }
-
-    res.json({ 
-      ...responseData,
-      cached: false
+      tiles: tiles.length,
+      cachedTiles: hits,
+      missedTiles: misses,
+      cached: misses === 0,
+      period: periodStr,
+      tileSize: tileSizeNum
     });
+
   } catch (e) {
     console.error('Error fetching video locations:', e);
     res.status(500).json({ message: "Server error" });
@@ -742,5 +794,8 @@ app.use((err, req, res, next) => {
     message: err.message || "Server error",
   });
 });
+
+const { startNightlyRebuild } = require("./jobs/rebuildMapTiles");
+startNightlyRebuild();
 
 app.listen(PORT, () => console.log(`Backend running on ${PORT}`));

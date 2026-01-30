@@ -7,6 +7,7 @@ const { upload, TMP_DIR } = require("../middlewares/upload");
 const requestTimeout = require("../middlewares/requestTimeout");
 
 const auth = require("../middlewares/auth"); 
+const mapTileCache = require("../services/mapTileCache");
 
 const router = express.Router();
 
@@ -27,6 +28,12 @@ function parseTags(raw) {
     .split(",")
     .map(t => t.trim())
     .filter(Boolean);
+}
+
+function getTileKeyFromLatLng(lat, lng, tileSize = 0.1) {
+  const tileX = Math.floor(lng / tileSize);
+  const tileY = Math.floor(lat / tileSize);
+  return `tile_${tileX}_${tileY}`;
 }
 
 router.post(
@@ -126,6 +133,37 @@ router.post(
       );
 
       await client.query("COMMIT");
+
+
+      // INSTANT UPDATE: osvezi samo tile gde je dodat video (ako je tile vec u cache-u)
+      try {
+        const tileSize = 0.1;
+        const lat = Number(locationObj?.latitude);
+        const lng = Number(locationObj?.longitude);
+
+        if (!Number.isNaN(lat) && !Number.isNaN(lng)) {
+          const tileKey = getTileKeyFromLatLng(lat, lng, tileSize);
+
+          const videoForMap = {
+            id: videoId,
+            title: title.trim(),
+            location: locationObj,
+            views: 0,
+            created_at: insert.rows[0].created_at,
+            username: null // (opciono) mozes iz DB da povuces username, ali nije obavezno
+          };
+
+          // ALL (uvek)
+          await mapTileCache.upsertVideoIntoTile(tileSize, tileKey, "all", videoForMap);
+
+          // ako koristis period filtere na mapi, može i ovo (ne smeta)
+          await mapTileCache.upsertVideoIntoTile(tileSize, tileKey, "30d", videoForMap);
+          await mapTileCache.upsertVideoIntoTile(tileSize, tileKey, "year", videoForMap);
+        }
+      } catch (e) {
+        // ne rusi upload ako redis ne radi
+        console.warn("[MAP TILE] instant update skipped:", e.message);
+      }
 
       // uspeh: ne brisemo final fajlove
       toDelete.length = 0;
