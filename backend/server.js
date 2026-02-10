@@ -15,6 +15,9 @@ const tileService = require('./services/tileService');
 const videosRoutes = require("./routes/videos");
 const thumbnailsRoutes = require("./routes/thumbnails");
 
+const http = require("http");
+const { Server } = require("socket.io");
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 app.use(cors());
@@ -206,7 +209,7 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
     const match = await bcrypt.compare(password, user.password);
     if (!match) return res.status(400).json({ error: 'Pogrešan email ili lozinka.' });
 
-    const token = jwt.sign({ id: user.id, email: user.email }, process.env.JWT_SECRET, { expiresIn: '1h' });
+    const token = jwt.sign({ id: user.id, email: user.email, username: user.username }, process.env.JWT_SECRET, { expiresIn: '1h' });
     res.json({ message: 'Uspešna prijava!', token });
   } catch (err) {
     console.error(err);
@@ -856,4 +859,62 @@ app.use((err, req, res, next) => {
 const { startNightlyRebuild } = require("./jobs/rebuildMapTiles");
 startNightlyRebuild();
 
-app.listen(PORT, () => console.log(`Backend running on ${PORT}`));
+//app.listen(PORT, () => console.log(`Backend running on ${PORT}`));
+const server = http.createServer(app);      //real time razmena poruka, kad neko udje na video -> automatski se pridruzi chatroomu, ne cuva se istorija
+
+const io = new Server(server, {
+  cors: {
+    origin: process.env.FRONTEND_URL || "http://localhost:3000",
+    methods: ["GET", "POST"]
+  }
+});
+
+// ---- CHAT LOGIC (NO HISTORY) ----
+io.on("connection", (socket) => {
+  // auto-join u chat na osnovu videa
+  socket.on("chat:join", ({ videoId, token }) => {
+    const id = Number(videoId);
+    if (!id) return;
+
+    // opcionalno: user info iz tokena (ako postoji)
+    let user = { id: null, username: "Guest" };
+    if (token) {
+      try {
+        const payload = jwt.verify(token, process.env.JWT_SECRET);
+        user.id = payload.id;
+        user.username = payload.username || "Guest";
+      } catch {
+        // ignore invalid token
+      }
+    }
+
+    socket.data.user = user;
+    socket.join(`video:${id}`);
+  });
+
+  socket.on("chat:message", async ({ videoId, text }) => {
+    const id = Number(videoId);
+    if (!id) return;
+
+    const clean = String(text || "").trim();
+    if (!clean) return;
+    if (clean.length > 200) return; // anti spam 
+
+    const user = socket.data.user || { id: null, username: "Guest" };
+
+    io.to(`video:${id}`).emit("chat:message", {
+      videoId: id,
+      text: clean,
+      user,
+      at: new Date().toISOString()
+    });
+  });
+
+  socket.on("chat:leave", ({ videoId }) => {
+    const id = Number(videoId);
+    if (!id) return;
+    socket.leave(`video:${id}`);
+  });
+});
+
+server.listen(PORT, () => console.log(`Backend running on ${PORT}`));

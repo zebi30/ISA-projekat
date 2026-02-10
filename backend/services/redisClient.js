@@ -3,7 +3,7 @@ const redis = require("redis");
 
 let client = null;
 
-async function getRedis() {
+async function getRedis() {   //vraca Redis klijenta, kreira ga ako ne postoji (singleton pattern)
   if (client) return client;
 
   client = redis.createClient({

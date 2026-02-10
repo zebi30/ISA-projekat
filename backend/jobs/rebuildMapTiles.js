@@ -3,7 +3,7 @@ const cron = require("node-cron");
 const pool = require("../pool");
 const mapTileCache = require("../services/mapTileCache");
 
-function getTileKeyFromLatLng(lat, lng, tileSize) {
+function getTileKeyFromLatLng(lat, lng, tileSize) {     //pravi tileKey na osnovu lat/lng i tileSize (npr. tile_10_20)
   const tileX = Math.floor(lng / tileSize);
   const tileY = Math.floor(lat / tileSize);
   return `tile_${tileX}_${tileY}`;
@@ -67,7 +67,7 @@ function startNightlyRebuild() {
   cron.schedule("30 3 * * *", async () => {
     try {
       console.log("[MAP REBUILD] starting...");
-      await rebuildAllTiles(0.1);
+      await rebuildAllTiles(0.1);             //popunjava redis za sutra
       console.log("[MAP REBUILD] done.");
     } catch (e) {
       console.error("[MAP REBUILD] failed:", e);
