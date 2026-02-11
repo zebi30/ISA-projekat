@@ -48,6 +48,86 @@ const transporter = nodemailer.createTransport({
   }
 });
 
+// health: liveness (NE dira DB/Redis)- uvek 200 ako je proces ziv  - koristi se za proveru da li je app uopste ziv, bez obzira na stanje DB/Redis
+app.get("/health/live", (req, res) => {
+  return res.json({
+    ok: true,
+    status: "live",
+    instance: process.env.INSTANCE_NAME || "unknown",
+    pid: process.pid,
+    ts: new Date().toISOString()
+  });
+});
+
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), ms))
+  ]);
+}
+
+// helper: proveri redis (ako padne, ne baca dalje)
+async function checkRedis() {
+  try {
+    const { getRedis } = require("./services/redisClient");
+
+    // getRedis mora brzo da vrati objekat (ne da blokira)
+    const r = await withTimeout(getRedis(), 200);
+
+    // ako nije konektovan, odmah down
+    if (!r || !r.isOpen) return "down";
+
+    // ping sa timeoutom, da ne visi
+    await withTimeout(r.ping(), 300);
+    return "up";
+  } catch (e) {
+    return "down";
+  }
+}
+
+// health: readiness (proverava DB + Redis)
+app.get("/health/ready", async (req, res) => {
+  const result = { ok: true, db: "up", redis: "up" };
+
+  // DB check
+  try {
+    await pool.query("SELECT 1");
+    result.db = "up";
+  } catch (e) {
+    result.db = "down";
+    result.ok = false;
+  }
+
+  // Redis check
+  result.redis = await checkRedis();
+  if (result.redis !== "up") result.ok = false;
+
+  if (!result.ok) {
+    return res.status(503).json(result);
+  }
+  return res.json(result);
+});
+
+app.get("/health", async (req, res) => {
+  // isto kao /health/ready
+  const result = { ok: true, db: "up", redis: "up" };
+
+  try { await pool.query("SELECT 1"); } catch { result.db = "down"; result.ok = false; }
+  result.redis = await checkRedis();
+  if (result.redis !== "up") result.ok = false;
+
+  if (!result.ok) return res.status(503).json(result);
+  return res.json(result);
+});
+
+app.get("/whoami", (req, res) => {      //identitet replike, koristi se za testiranje load balancera i sticky sessiona
+  res.json({
+    instance: process.env.INSTANCE_NAME || "unknown",
+    pid: process.pid
+  });
+});
+
+
 app.post('/api/auth/register', async (req, res) => {
   const { email, username, password, password2, first_name, last_name, address } = req.body;
 
