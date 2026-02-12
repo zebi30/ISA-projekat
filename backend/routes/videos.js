@@ -36,6 +36,19 @@ function getTileKeyFromLatLng(lat, lng, tileSize = 0.1) {
   return `tile_${tileX}_${tileY}`;
 }
 
+const protobuf = require("protobufjs");
+const { publish } = require("../services/mq");
+
+let UploadEventType = null;
+async function getUploadEventType() {
+  if (UploadEventType) return UploadEventType;
+
+  const protoPath = path.join(__dirname, "..", "contracts", "upload_event.proto");
+  const root = await protobuf.load(protoPath);
+  UploadEventType = root.lookupType("jutjubic.UploadEvent");
+  return UploadEventType;
+}
+
 router.post(
   "/",
   auth,
@@ -133,6 +146,41 @@ router.post(
       );
 
       await client.query("COMMIT");
+
+      // --- MQ: publish UploadEvent (JSON + Protobuf) ---
+      try {
+        //const authorUsername = req.user?.username || null; // ti u auth middleware trenutno setuješ samo {id}
+        const u = await pool.query("SELECT username FROM users WHERE id=$1", [req.user.id]);
+        const authorUsername = u.rows[0]?.username || null;
+
+        const event = {
+          video_id: Number(videoId),
+          title: String(title.trim()),
+          size_bytes: Number(videoFile.size || 0),
+          author_id: Number(req.user.id),
+          author_username: String(authorUsername || "unknown"),
+          mime_type: String(videoFile.mimetype || "video/mp4"),
+          created_at_iso: new Date(insert.rows[0].created_at).toISOString(),
+          thumbnail_path: String(relThumb),
+          video_path: String(relVideo),
+          tags: tags.map(String)
+        };
+
+        // JSON
+        const jsonBuf = Buffer.from(JSON.stringify(event), "utf8");
+        await publish("upload.json", jsonBuf, { contentType: "application/json" });
+
+        // Protobuf
+        const T = await getUploadEventType();
+        const errMsg = T.verify(event);
+        if (errMsg) throw new Error("Protobuf verify failed: " + errMsg);
+
+        const pbBuf = Buffer.from(T.encode(T.create(event)).finish());
+        await publish("upload.pb", pbBuf, { contentType: "application/x-protobuf" });
+
+      } catch (e) {
+        console.warn("[MQ] publish skipped:", e.message);
+      }
 
 
       // INSTANT UPDATE: osvezi samo tile gde je dodat video (ako je tile vec u cache-u)

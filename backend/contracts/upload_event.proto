@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package jutjubic;
+
+// osnovne info o novom videu
+message UploadEvent {
+  int64  video_id        = 1;
+  string title           = 2;
+  int64  size_bytes      = 3;
+  int64  author_id       = 4;
+  string author_username = 5;
+  string mime_type       = 6;
+  string created_at_iso  = 7;
+
+  // opciono (ali korisno)
+  string thumbnail_path  = 8;
+  string video_path      = 9;
+  repeated string tags   = 10;
+}
