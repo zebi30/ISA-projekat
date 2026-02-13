@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { getVideoComments, postComment, likeVideo, unlikeVideo } from "../services/api";
-import { io } from "socket.io-client";
+import { startLive } from "../services/api";
 
 export default function VideoWatch() {
   const { id } = useParams();
@@ -25,11 +25,6 @@ export default function VideoWatch() {
   const [isLiked, setIsLiked] = useState(false);
   const [likesCount, setLikesCount] = useState(0);
   const [likeLoading, setLikeLoading] = useState(false);
-  
-  //Messages state
-  const [chatMessages, setChatMessages] = useState([]);
-  const [chatText, setChatText] = useState("");
-  const socketRef = useRef(null);
 
   // Check if user is logged in
   const token = localStorage.getItem('token');
@@ -70,6 +65,12 @@ export default function VideoWatch() {
         }
 
         setVideo(data);
+
+        if (data.is_live) {
+          navigate(`/live/${id}`);
+          return;
+        }
+
         setLikesCount(Number(data.likes) || 0);
       } catch (e) {
         alert("Greška pri učitavanju videa.");
@@ -79,33 +80,6 @@ export default function VideoWatch() {
       }
     })();
   }, [id, navigate]);
-
-  // Load chat messages and setup socket connection
-  useEffect(() => {
-    if (!id) return;
-
-    const socket = io("http://localhost:5000", {
-      transports: ["websocket"]
-    });
-
-    socketRef.current = socket;
-
-    // join room za ovaj video
-    socket.emit("chat:join", { videoId: id, token: localStorage.getItem("token") });
-
-    socket.on("chat:message", (msg) => {
-      // msg: {videoId, text, user, at}
-      if (Number(msg.videoId) !== Number(id)) return;
-      setChatMessages((prev) => [...prev, msg]);
-    });
-
-    return () => {
-      try {
-        socket.emit("chat:leave", { videoId: id });
-        socket.disconnect();
-      } catch {}
-    };
-  }, [id]);
 
   // Check like status when video loads or login status changes
   useEffect(() => {
@@ -216,22 +190,28 @@ export default function VideoWatch() {
       setSubmitting(false);
     }
   };
-  
-  // Slanje poruka u chat
-  const sendChatMessage = (e) => {
-    e.preventDefault();
-    const clean = chatText.trim();
-    if (!clean) return;
-
-    socketRef.current?.emit("chat:message", { videoId: id, text: clean });
-    setChatText("");
-  };
 
 
   const handlePageChange = (newPage) => {
     setCurrentPage(newPage);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
+
+  const handleStartLive = async () => {
+    if (!isLoggedIn) {
+      alert("Morate se prijaviti.");
+      navigate("/login");
+      return;
+    }
+
+    try {
+      await startLive(id, token);
+      navigate(`/live/${id}`);
+    } catch (e) {
+      alert(e.message);
+    }
+  };
+
 
   if (loading) return <div style={{ padding: 20 }}>Loading...</div>;
   if (!video) return null;
@@ -306,68 +286,29 @@ export default function VideoWatch() {
           >
             {isLiked ? "❤️" : "♡"} {likesCount} {isLiked ? "Lajk-ova" : "Lajk-ova"}
           </button>
+
+          {!video?.is_live && isLoggedIn && (
+          <button
+            onClick={handleStartLive}
+            style={{
+              padding: "10px 20px",
+              borderRadius: 10,
+              border: "none",
+              background: "#e53935",
+              color: "white",
+              fontWeight: 800,
+              cursor: "pointer"
+            }}
+          >
+            🔴 Start LIVE
+          </button>
+        )}
+
         </div>
 
         <div style={{ color: "#666", fontSize: '14px' }}>
           👁 {video.views ?? 0} pregleda
         </div>
-      </div>
-
-      {/* LIVE CHAT */}
-      <div style={{ marginTop: 28, padding: 16, border: "1px solid #e0e0e0", borderRadius: 12, background: "white" }}>
-        <h3 style={{ marginTop: 0 }}>💬 Live chat</h3>
-
-        <div style={{
-          height: 220,
-          overflowY: "auto",
-          border: "1px solid #eee",
-          borderRadius: 10,
-          padding: 10,
-          background: "#fafafa"
-        }}>
-          {chatMessages.length === 0 ? (
-            <div style={{ color: "#999" }}>Nema poruka još.</div>
-          ) : (
-            chatMessages.map((m, idx) => (
-              <div key={idx} style={{ marginBottom: 10 }}>
-                <div style={{ fontSize: 12, color: "#666" }}>
-                  <b>{m.user?.username || "Guest"}</b> • {new Date(m.at).toLocaleTimeString("sr-RS")}
-                </div>
-                <div style={{ fontSize: 14, color: "#333" }}>{m.text}</div>
-              </div>
-            ))
-          )}
-        </div>
-
-        <form onSubmit={sendChatMessage} style={{ display: "flex", gap: 10, marginTop: 12 }}>
-          <input
-            value={chatText}
-            onChange={(e) => setChatText(e.target.value)}
-            placeholder="Napiši poruku..."
-            maxLength={200}
-            style={{
-              flex: 1,
-              padding: "10px 12px",
-              borderRadius: 10,
-              border: "1px solid #ddd"
-            }}
-          />
-          <button
-            type="submit"
-            disabled={!chatText.trim()}
-            style={{
-              padding: "10px 14px",
-              borderRadius: 10,
-              border: "none",
-              background: !chatText.trim() ? "#ccc" : "#1976d2",
-              color: "white",
-              fontWeight: 700,
-              cursor: !chatText.trim() ? "not-allowed" : "pointer"
-            }}
-          >
-            Pošalji
-          </button>
-        </form>
       </div>
 
       {/* Comments Section */}

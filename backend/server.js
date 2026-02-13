@@ -336,7 +336,7 @@ app.get('/api/videos', async (req, res) => {
 
   try {
     const result = await pool.query(`
-      SELECT v.id, v.title, v.description, v.thumbnail, v.created_at, v.likes, v.views,
+      SELECT v.id, v.title, v.description, v.thumbnail, v.created_at, v.likes, v.views, v.is_live,
              u.id as user_id, u.username, u.first_name, u.last_name
       FROM videos v
       JOIN users u ON v.user_id = u.id
@@ -718,6 +718,7 @@ app.get('/api/videos/map', async (req, res) => {
           v.location,
           v.views,
           v.created_at,
+          v.is_live,
           u.username
          FROM videos v
          LEFT JOIN users u ON v.user_id = u.id
@@ -866,7 +867,7 @@ app.get("/api/videos/:id", async (req, res) => {
   try {
     const result = await pool.query(
       `
-      SELECT v.id, v.title, v.description, v.video_path, v.thumbnail, v.views, v.likes, v.created_at,
+      SELECT v.id, v.title, v.description, v.video_path, v.thumbnail, v.views, v.likes, v.created_at, v.is_live,
              u.id as user_id, u.username, u.first_name, u.last_name
       FROM videos v
       JOIN users u ON v.user_id = u.id
@@ -901,7 +902,7 @@ app.post("/api/videos/:id/watch", async (req, res) => {
     // Get video data
     const result = await pool.query(
       `
-      SELECT v.id, v.title, v.description, v.video_path, v.thumbnail, v.views, v.likes, v.created_at,
+      SELECT v.id, v.title, v.description, v.video_path, v.thumbnail, v.views, v.likes, v.created_at, v.is_live,
              u.id as user_id, u.username, u.first_name, u.last_name
       FROM videos v
       JOIN users u ON v.user_id = u.id
@@ -920,6 +921,41 @@ app.post("/api/videos/:id/watch", async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
+
+// START LIVE (samo vlasnik videa)
+app.post("/api/videos/:id/live/start", authMiddleware, async (req, res) => {
+  const videoId = Number(req.params.id);
+  const userId = req.user.id;
+
+  if (!videoId) return res.status(400).json({ error: "Invalid video id" });
+
+  try {
+    // proveri da video postoji i da je vlasnik isti user
+    const check = await pool.query(
+      "SELECT id, user_id, is_live FROM videos WHERE id = $1",
+      [videoId]
+    );
+
+    if (check.rows.length === 0) return res.status(404).json({ error: "Video ne postoji." });
+
+    const video = check.rows[0];
+    if (Number(video.user_id) !== Number(userId)) {
+      return res.status(403).json({ error: "Nemate pravo da startujete live za ovaj video." });
+    }
+
+    // set live = true
+    const upd = await pool.query(
+      "UPDATE videos SET is_live = true WHERE id = $1 RETURNING id, is_live",
+      [videoId]
+    );
+
+    return res.json({ message: "Live startovan.", video: upd.rows[0] });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
 
 //Kreiranje ruta za video i thumbnail 
 // statički pristup video fajlovima (video_path koristi ovo)
@@ -952,9 +988,25 @@ const io = new Server(server, {
 // ---- CHAT LOGIC (NO HISTORY) ----
 io.on("connection", (socket) => {
   // auto-join u chat na osnovu videa
-  socket.on("chat:join", ({ videoId, token }) => {
+  socket.on("chat:join", async ({ videoId, token }) => {
     const id = Number(videoId);
     if (!id) return;
+
+    // 1) PROVERI DA LI JE VIDEO LIVE/STREAMING
+    try {
+      const r = await pool.query("SELECT is_live FROM videos WHERE id=$1", [id]);
+      if (r.rows.length === 0) {
+        socket.emit("chat:error", { message: "Video ne postoji." });
+        return;
+      }
+      if (!r.rows[0].is_live) {
+        socket.emit("chat:error", { message: "Live chat je dostupan samo tokom live streaming-a." });
+        return;
+      }
+    } catch (e) {
+      socket.emit("chat:error", { message: "Server error (chat join)." });
+      return;
+    }
 
     // opcionalno: user info iz tokena (ako postoji)
     let user = { id: null, username: "Guest" };
@@ -969,7 +1021,9 @@ io.on("connection", (socket) => {
     }
 
     socket.data.user = user;
-    socket.join(`video:${id}`);
+    
+    // 3) JOIN LIVE ROOM (razmena poruka samo između gledalaca tog videa)
+    socket.join(`live:${id}`);
   });
 
   socket.on("chat:message", async ({ videoId, text }) => {
@@ -980,9 +1034,17 @@ io.on("connection", (socket) => {
     if (!clean) return;
     if (clean.length > 200) return; // anti spam 
 
+    // proveri da i dalje traje live (ako je stream završio, ne salji poruke)
+    try {
+      const r = await pool.query("SELECT is_live FROM videos WHERE id=$1", [id]);
+      if (r.rows.length === 0 || !r.rows[0].is_live) return;
+    } catch {
+      return;
+    }
     const user = socket.data.user || { id: null, username: "Guest" };
 
-    io.to(`video:${id}`).emit("chat:message", {
+    // EMIT ISTO U LIVE ROOM 
+    io.to(`live:${id}`).emit("chat:message", {
       videoId: id,
       text: clean,
       user,
@@ -993,7 +1055,7 @@ io.on("connection", (socket) => {
   socket.on("chat:leave", ({ videoId }) => {
     const id = Number(videoId);
     if (!id) return;
-    socket.leave(`video:${id}`);
+    socket.leave(`live:${id}`);
   });
 });
 
