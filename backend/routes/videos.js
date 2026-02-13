@@ -1,6 +1,7 @@
 const express = require("express");
 const path = require("path");
 const fs = require("fs-extra");
+const { v4: uuidv4 } = require("uuid");
 
 const pool = require("../pool");
 const { upload, TMP_DIR } = require("../middlewares/upload");
@@ -8,14 +9,22 @@ const requestTimeout = require("../middlewares/requestTimeout");
 
 const auth = require("../middlewares/auth"); 
 const mapTileCache = require("../services/mapTileCache");
+const { enqueueTranscodeJob } = require("../services/transcodeQueue");
 
 const router = express.Router();
 
 const VIDEOS_DIR = path.join(__dirname, "..", "uploads", "videos");
 const THUMBS_DIR = path.join(__dirname, "..", "uploads", "thumbs");
+const TRANSCODED_DIR = path.join(__dirname, "..", "uploads", "transcoded");
 
 fs.ensureDirSync(VIDEOS_DIR);
 fs.ensureDirSync(THUMBS_DIR);
+fs.ensureDirSync(TRANSCODED_DIR);
+
+const TRANSCODE_PROFILES = [
+  { label: "480p", width: 854, height: 480, videoBitrate: "1000k", audioBitrate: "128k" },
+  { label: "720p", width: 1280, height: 720, videoBitrate: "2500k", audioBitrate: "128k" },
+];
 
 function parseTags(raw) {
   if (!raw) return [];
@@ -127,10 +136,31 @@ router.post(
 
       await client.query(
         `UPDATE videos
-         SET video_path=$1, thumbnail=$2
+         SET video_path=$1,
+             thumbnail=$2,
+             transcode_status='pending',
+             transcoded_outputs=NULL,
+             transcode_error=NULL
          WHERE id=$3`,
         [relVideo, relThumb, videoId]
       );
+
+      const transcodeJob = {
+        jobId: uuidv4(),
+        videoId,
+        sourceReference: relVideo,
+        sourcePath: movedVideoPath,
+        outputDir: path.join(TRANSCODED_DIR, String(videoId)),
+        profiles: TRANSCODE_PROFILES,
+        requestedAt: new Date().toISOString(),
+      };
+
+      const enqueueResult = await enqueueTranscodeJob(transcodeJob);
+      if (!enqueueResult.queued) {
+        const err = new Error("Neuspesno slanje videa u transcoding queue.");
+        err.status = 503;
+        throw err;
+      }
 
       await client.query("COMMIT");
 
@@ -177,6 +207,7 @@ router.post(
         created_at: insert.rows[0].created_at,
         video_path: relVideo,
         thumbnail: relThumb,
+        transcode_status: "pending",
       });
     } catch (err) {
       try {

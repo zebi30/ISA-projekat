@@ -4,7 +4,12 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "worker:transcode": "node workers/transcodeWorker.js",
+    "worker:transcode:1": "set TRANSCODE_WORKER_NAME=consumer-1&& node workers/transcodeWorker.js",
+    "worker:transcode:2": "set TRANSCODE_WORKER_NAME=consumer-2&& node workers/transcodeWorker.js",
+    "transcode:requeue-pending": "node scripts/requeuePendingTranscodes.js",
+    "thumbs:compress:run": "node scripts/runThumbnailCompressionNow.js"
   },
   "keywords": [],
   "author": "",
@@ -16,6 +21,7 @@
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "express-rate-limit": "^8.2.1",
+    "ffmpeg-static": "^5.2.0",
     "fs-extra": "^11.3.3",
     "jsonwebtoken": "^9.0.3",
     "lru-cache": "^11.2.4",
@@ -24,6 +30,7 @@
     "nodemailer": "^7.0.12",
     "pg": "^8.16.3",
     "redis": "^5.10.0",
+    "sharp": "^0.34.4",
     "uuid": "^13.0.0"
   }
 }
