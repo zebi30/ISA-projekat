@@ -11,6 +11,7 @@ const commentCache = require('./services/commentCache');
 const rateLimiter = require('./middlewares/rateLimiter');
 const mapTileCache = require("./services/mapTileCache");
 const tileService = require('./services/tileService');
+const { ensureTranscodeColumns } = require("./services/transcodeSchema");
 
 const videosRoutes = require("./routes/videos");
 const thumbnailsRoutes = require("./routes/thumbnails");
@@ -253,7 +254,8 @@ app.get('/api/videos', async (req, res) => {
 
   try {
     const result = await pool.query(`
-      SELECT v.id, v.title, v.description, v.thumbnail, v.created_at, v.likes, v.views,
+          SELECT v.id, v.title, v.description, v.thumbnail, v.created_at, v.likes, v.views,
+            v.transcode_status, v.transcoded_outputs, v.transcode_error,
              u.id as user_id, u.username, u.first_name, u.last_name
       FROM videos v
       JOIN users u ON v.user_id = u.id
@@ -783,7 +785,8 @@ app.get("/api/videos/:id", async (req, res) => {
   try {
     const result = await pool.query(
       `
-      SELECT v.id, v.title, v.description, v.video_path, v.thumbnail, v.views, v.likes, v.created_at,
+          SELECT v.id, v.title, v.description, v.video_path, v.thumbnail, v.views, v.likes, v.created_at,
+            v.transcode_status, v.transcoded_outputs, v.transcode_error,
              u.id as user_id, u.username, u.first_name, u.last_name
       FROM videos v
       JOIN users u ON v.user_id = u.id
@@ -818,7 +821,8 @@ app.post("/api/videos/:id/watch", async (req, res) => {
     // Get video data
     const result = await pool.query(
       `
-      SELECT v.id, v.title, v.description, v.video_path, v.thumbnail, v.views, v.likes, v.created_at,
+          SELECT v.id, v.title, v.description, v.video_path, v.thumbnail, v.views, v.likes, v.created_at,
+            v.transcode_status, v.transcoded_outputs, v.transcode_error,
              u.id as user_id, u.username, u.first_name, u.last_name
       FROM videos v
       JOIN users u ON v.user_id = u.id
@@ -854,6 +858,16 @@ app.use((err, req, res, next) => {
 });
 
 const { startNightlyRebuild } = require("./jobs/rebuildMapTiles");
-startNightlyRebuild();
+const { startNightlyThumbnailCompression } = require("./jobs/compressOldThumbnails");
 
-app.listen(PORT, () => console.log(`Backend running on ${PORT}`));
+async function startServer() {
+  await ensureTranscodeColumns();
+  startNightlyRebuild();
+  startNightlyThumbnailCompression();
+  app.listen(PORT, () => console.log(`Backend running on ${PORT}`));
+}
+
+startServer().catch((error) => {
+  console.error("Failed to start backend:", error);
+  process.exit(1);
+});
