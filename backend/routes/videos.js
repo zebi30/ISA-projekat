@@ -10,6 +10,7 @@ const requestTimeout = require("../middlewares/requestTimeout");
 const auth = require("../middlewares/auth"); 
 const mapTileCache = require("../services/mapTileCache");
 const { enqueueTranscodeJob } = require("../services/transcodeQueue");
+const { recordVideoViewEvent } = require("../services/popularVideosEtlService");
 
 const router = express.Router();
 
@@ -39,10 +40,91 @@ function parseTags(raw) {
     .filter(Boolean);
 }
 
+function parseScheduleAt(raw, rawEpochMs) {
+  if (!raw && !rawEpochMs) return null;
+
+  let parsed;
+  if (rawEpochMs !== undefined && rawEpochMs !== null && String(rawEpochMs).trim() !== '') {
+    const epochMs = Number(rawEpochMs);
+    if (!Number.isFinite(epochMs)) {
+      const err = new Error("Zakazani datum/vreme nije validan.");
+      err.status = 400;
+      throw err;
+    }
+    parsed = new Date(epochMs);
+  } else {
+    parsed = new Date(raw);
+  }
+
+  if (Number.isNaN(parsed.getTime())) {
+    const err = new Error("Zakazani datum/vreme nije validan.");
+    err.status = 400;
+    throw err;
+  }
+
+  const now = new Date();
+  now.setSeconds(0, 0);
+  const minAllowed = new Date(now.getTime() + 60 * 1000);
+
+  if (parsed.getTime() < minAllowed.getTime()) {
+    const err = new Error("Zakazani datum/vreme mora biti najmanje 1 minut u budućnosti.");
+    err.status = 400;
+    throw err;
+  }
+
+  return parsed;
+}
+
 function getTileKeyFromLatLng(lat, lng, tileSize = 0.1) {
   const tileX = Math.floor(lng / tileSize);
   const tileY = Math.floor(lat / tileSize);
   return `tile_${tileX}_${tileY}`;
+}
+
+function getSynchronizedOffsetSeconds(videoRow) {
+  if (!videoRow?.schedule_at) return 0;
+
+  const scheduleTimestamp = new Date(videoRow.schedule_at).getTime();
+  if (Number.isNaN(scheduleTimestamp)) return 0;
+
+  return Math.max(0, Math.floor((Date.now() - scheduleTimestamp) / 1000));
+}
+
+function buildScheduleLockPayload(scheduleAt) {
+  const releaseTime = new Date(scheduleAt).getTime();
+  const now = Date.now();
+  return {
+    message: "Video je zakazan i još nije dostupan.",
+    schedule_at: scheduleAt,
+    available_in_seconds: Math.ceil((releaseTime - now) / 1000),
+  };
+}
+
+async function blockScheduledVideoAccess(req, res, next) {
+  const videoId = Number(req.params.id);
+  if (!videoId) return next();
+
+  try {
+    const result = await pool.query(
+      'SELECT schedule_at FROM videos WHERE id = $1',
+      [videoId]
+    );
+
+    if (result.rows.length === 0) return next();
+
+    const scheduleAt = result.rows[0].schedule_at;
+    if (!scheduleAt) return next();
+
+    const releaseTime = new Date(scheduleAt).getTime();
+    if (!Number.isNaN(releaseTime) && releaseTime > Date.now()) {
+      return res.status(423).json(buildScheduleLockPayload(scheduleAt));
+    }
+
+    return next();
+  } catch (error) {
+    console.error('Schedule lock check failed:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
 }
 
 router.post(
@@ -68,6 +150,7 @@ router.post(
     try {
       const { title, description, location } = req.body;
       const tags = parseTags(req.body.tags);
+      const scheduleAt = parseScheduleAt(req.body.schedule_at, req.body.schedule_at_epoch_ms);
 
       if (!title?.trim()) {
         const err = new Error("Naslov je obavezan.");
@@ -101,9 +184,9 @@ router.post(
 
       // 1) prvo napravi row (sa placeholder putanjama)
       const insert = await client.query(
-        `INSERT INTO videos (user_id, title, description, video_path, thumbnail, tags, location)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)
-         RETURNING id, created_at`,
+        `INSERT INTO videos (user_id, title, description, video_path, thumbnail, tags, location, schedule_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         RETURNING id, created_at, schedule_at`,
         [
           req.user.id,
           title.trim(),
@@ -112,6 +195,7 @@ router.post(
           null,
           tags.length ? tags : null,
           locationObj,
+          scheduleAt,
         ]
       );
 
@@ -170,8 +254,9 @@ router.post(
         const tileSize = 0.1;
         const lat = Number(locationObj?.latitude);
         const lng = Number(locationObj?.longitude);
+        const isVisibleNow = !insert.rows[0].schedule_at || new Date(insert.rows[0].schedule_at) <= new Date();
 
-        if (!Number.isNaN(lat) && !Number.isNaN(lng)) {
+        if (isVisibleNow && !Number.isNaN(lat) && !Number.isNaN(lng)) {
           const tileKey = getTileKeyFromLatLng(lat, lng, tileSize);
 
           const videoForMap = {
@@ -205,6 +290,7 @@ router.post(
         tags,
         location: locationObj,
         created_at: insert.rows[0].created_at,
+        schedule_at: insert.rows[0].schedule_at,
         video_path: relVideo,
         thumbnail: relThumb,
         transcode_status: "pending",
@@ -233,7 +319,7 @@ router.post(
 );
 
 // GET /api/videos/:id  (public)
-router.get("/:id", async (req, res) => {
+router.get("/:id", blockScheduledVideoAccess, async (req, res) => {
   const videoId = Number(req.params.id);
   if (!videoId) return res.status(400).json({ message: "Invalid video id" });
 
@@ -248,7 +334,20 @@ router.get("/:id", async (req, res) => {
     const r = await pool.query(q, [videoId]);
     if (r.rows.length === 0) return res.status(404).json({ message: "Video not found" });
 
-    res.json(r.rows[0]);
+    const row = r.rows[0];
+    if (row.schedule_at) {
+      const releaseTime = new Date(row.schedule_at).getTime();
+      const now = Date.now();
+      if (!Number.isNaN(releaseTime) && releaseTime > now) {
+        return res.status(423).json({
+          message: "Video je zakazan i još nije dostupan.",
+          schedule_at: row.schedule_at,
+          available_in_seconds: Math.ceil((releaseTime - now) / 1000),
+        });
+      }
+    }
+
+    res.json(row);
   } catch (e) {
     console.error(e);
     res.status(500).json({ message: "Server error" });
@@ -256,28 +355,54 @@ router.get("/:id", async (req, res) => {
 });
 
 // POST /api/videos/:id/watch  (public) - uveca views i vraca video
-router.post("/:id/watch", async (req, res) => {
+router.post("/:id/watch", blockScheduledVideoAccess, async (req, res) => {
   const videoId = Number(req.params.id);
   if (!videoId) return res.status(400).json({ message: "Invalid video id" });
 
   try {
-    // 1 statement: atomic update 
-    const q = `
-      WITH upd AS (
-        UPDATE videos
-        SET views = views + 1
-        WHERE id = $1
-        RETURNING *
-      )
-      SELECT upd.*, u.username, u.first_name, u.last_name
-      FROM upd
-      JOIN users u ON u.id = upd.user_id
-    `;
+    const videoResult = await pool.query(
+      `
+      SELECT v.*, u.username, u.first_name, u.last_name
+      FROM videos v
+      JOIN users u ON u.id = v.user_id
+      WHERE v.id = $1
+      `,
+      [videoId]
+    );
 
-    const r = await pool.query(q, [videoId]);
-    if (r.rows.length === 0) return res.status(404).json({ message: "Video not found" });
+    if (videoResult.rows.length === 0) {
+      return res.status(404).json({ message: "Video not found" });
+    }
 
-    res.json(r.rows[0]);
+    const row = videoResult.rows[0];
+    if (row.schedule_at) {
+      const releaseTime = new Date(row.schedule_at).getTime();
+      const now = Date.now();
+      if (!Number.isNaN(releaseTime) && releaseTime > now) {
+        return res.status(423).json({
+          message: "Video je zakazan i još nije dostupan.",
+          schedule_at: row.schedule_at,
+          available_in_seconds: Math.ceil((releaseTime - now) / 1000),
+        });
+      }
+    }
+
+    const upd = await pool.query(
+      `UPDATE videos
+       SET views = views + 1
+       WHERE id = $1
+       RETURNING views`,
+      [videoId]
+    );
+    row.views = upd.rows[0]?.views ?? row.views;
+    await recordVideoViewEvent(videoId);
+
+    res.json({
+      ...row,
+      playback_offset_seconds: getSynchronizedOffsetSeconds(row),
+      stream_sync: Boolean(row.schedule_at),
+      server_time: new Date().toISOString(),
+    });
   } catch (e) {
     console.error(e);
     res.status(500).json({ message: "Server error" });

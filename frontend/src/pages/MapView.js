@@ -1,9 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import '../styles/MapView.css';
 
-// Custom marker icon
 const customMarker = new L.Icon({
   iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png',
   shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
@@ -13,76 +12,95 @@ const customMarker = new L.Icon({
   shadowSize: [41, 41]
 });
 
-// Map changes/Video loader component
 function MapTileLoader({ onVideosUpdate }) {
   const map = useMap();
   const [loading, setLoading] = useState(false);
+  const debounceRef = useRef(null);
 
   const loadTileVideos = async () => {
-    if (!map) return;
+    if (!map || loading) return;
 
     setLoading(true);
 
     try {
-      // Current bounds/zoom level
       const bounds = map.getBounds();
       const zoomLevel = map.getZoom();
 
       const params = new URLSearchParams({
-        zoomLevel: zoomLevel,
-        minLat: bounds.getSouth(),
-        maxLat: bounds.getNorth(),
-        minLng: bounds.getWest(),
-        maxLng: bounds.getEast()
+        minLat: bounds.getSouth().toString(),
+        maxLat: bounds.getNorth().toString(),
+        minLng: bounds.getWest().toString(),
+        maxLng: bounds.getEast().toString(),
+        tileSize: '0.1'
       });
 
-      // Tile API
-      const response = await fetch(
-        `http://localhost:5000/api/videos/tiles?${params}`
-      );
+      const response = await fetch(`http://localhost:5000/api/videos/map?${params}`);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
       const data = await response.json();
 
-      console.log(`📍 Zoom: ${zoomLevel} | Videos: ${data.count}/${data.totalCount} | Tiles: ${data.tiles.gridSize}x${data.tiles.gridSize}`);
+      const tileCount = Number(data.tiles || 0);
+      const visibleCount = Number(data.count || 0);
+      const totalCount = data.totalCount ?? visibleCount;
+      const message = `📍 Zoom: ${zoomLevel} | Videos: ${visibleCount}/${totalCount} | Tiles: ${tileCount}`;
 
-      onVideosUpdate(data.videos, data);
+      console.log(message);
 
+      onVideosUpdate(data.videos || [], {
+        ...data,
+        message,
+        count: visibleCount,
+        totalCount,
+        tiles: {
+          gridSize: tileCount
+        }
+      });
     } catch (err) {
       console.error('Error loading tile videos:', err);
+      onVideosUpdate([], {
+        message: 'Greška pri učitavanju mape',
+        count: 0,
+        totalCount: 0,
+        tiles: { gridSize: 0 }
+      });
     } finally {
       setLoading(false);
     }
   };
 
-  // Load videos
   useEffect(() => {
     loadTileVideos();
   }, []);
 
-  // Load videos when the map is "changing" (zoom, moving)
   useEffect(() => {
-    const timer = setTimeout(loadTileVideos, 300); // Debounce: 300ms
+    const scheduleLoad = () => {
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current);
+      }
+      debounceRef.current = setTimeout(loadTileVideos, 300);
+    };
 
-    map.on('moveend', () => {
-      clearTimeout(timer);
-      setTimeout(loadTileVideos, 300);
-    });
+    map.on('moveend', scheduleLoad);
+    map.on('zoomend', scheduleLoad);
 
-    map.on('zoomend', () => {
-      clearTimeout(timer);
-      setTimeout(loadTileVideos, 300);
-    });
-
-    return () => clearTimeout(timer);
+    return () => {
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current);
+      }
+      map.off('moveend', scheduleLoad);
+      map.off('zoomend', scheduleLoad);
+    };
   }, [map]);
 
   return null;
 }
 
-// Main MapView compoentn
 export default function MapView() {
   const [videos, setVideos] = useState([]);
   const [tileInfo, setTileInfo] = useState(null);
-  const [mapCenter] = useState([20, 0]); // center
+  const [mapCenter] = useState([20, 0]);
   const [zoomLevel] = useState(3);
 
   const handleVideosUpdate = (newVideos, tileData) => {
@@ -94,7 +112,6 @@ export default function MapView() {
     <div className="map-container">
       <h1> Napredna mapa video snimaka</h1>
 
-      
       {tileInfo && (
         <div className="tile-info">
           <div className="info-item message">
@@ -103,7 +120,6 @@ export default function MapView() {
         </div>
       )}
 
-      {/* Map */}
       <MapContainer
         center={mapCenter}
         zoom={zoomLevel}
@@ -114,10 +130,8 @@ export default function MapView() {
           attribution='&copy; OpenStreetMap contributors'
         />
 
-        {/* Tile loader */}
         <MapTileLoader onVideosUpdate={handleVideosUpdate} />
 
-        {/* Video markers */}
         {videos.map(video => (
           <Marker
             key={video.id}
@@ -127,7 +141,7 @@ export default function MapView() {
             <Popup>
               <div style={{ minWidth: '250px' }}>
                 <h4 style={{ margin: '0 0 10px 0', cursor: 'pointer', color: '#667eea', textDecoration: 'underline' }}>
-                  <a 
+                  <a
                     href={`/videos/${video.id}`}
                     style={{ color: '#667eea', textDecoration: 'none' }}
                     onClick={(e) => {
@@ -148,10 +162,12 @@ export default function MapView() {
                   👁️ {video.views} views | ❤️ {video.likes} likes
                 </p>
                 <p style={{ fontSize: '11px', color: '#aaa', margin: '5px 0' }}>
-                  📍 {video.location.latitude.toFixed(4)}, {video.location.longitude.toFixed(4)}
+                  📍 {Number(video.location.latitude).toFixed(4)}, {Number(video.location.longitude).toFixed(4)}
                 </p>
-                <button 
-                  onClick={() => window.location.href = `/videos/${video.id}`}
+                <button
+                  onClick={() => {
+                    window.location.href = `/videos/${video.id}`;
+                  }}
                   style={{
                     marginTop: '10px',
                     width: '100%',
