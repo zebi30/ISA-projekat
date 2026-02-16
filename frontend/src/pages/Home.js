@@ -50,6 +50,13 @@ export default function Home() {
     window.location.reload();
   };
 
+  const handleWatchClick1 = (video) => {
+    if (video.is_live) {
+      navigate(`/live/${video.id}`);
+    } else {
+      navigate(`/videos/${video.id}`);
+    }
+  };
   const handleWatchClick = async (video) => {
     if (video?.schedule_at) {
       const releaseTime = new Date(video.schedule_at).getTime();
@@ -347,7 +354,7 @@ export default function Home() {
             {videos.map((video) => (
               <div 
                 key={video.id} 
-                onClick={() => handleWatchClick(video)}
+                onClick={() => handleWatchClick1(video)}
                 style={{ 
                   background: 'white', 
                   borderRadius: '12px',
@@ -373,6 +380,22 @@ export default function Home() {
                   position: 'relative',
                   overflow: 'hidden'
                 }}>
+                  {video.is_live && (
+                    <div style={{
+                      position: "absolute",
+                      top: 8,
+                      left: 8,
+                      background: "#e53935",
+                      color: "white",
+                      padding: "4px 8px",
+                      borderRadius: 6,
+                      fontSize: 12,
+                      fontWeight: 800,
+                      zIndex: 2
+                    }}>
+                      LIVE
+                    </div>
+                  )}
                   <img 
                     src={video.thumbnail?.startsWith('http') 
                       ? video.thumbnail 

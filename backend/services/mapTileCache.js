@@ -1,23 +1,23 @@
 // services/mapTileCache.js
 const { getRedis } = require("./redisClient");
 
-function key(tileSize, tileKey, period) {
+function key(tileSize, tileKey, period) {   //pravi kljuc za redis u formatu: map:tile:{tileSize}:{tileKey}:{period}
   return `map:tile:${tileSize}:${tileKey}:${period}`;
 }
 
-async function getTile(tileSize, tileKey, period) {
+async function getTile(tileSize, tileKey, period) {   //uzima tile iz redis-a po kljucu
   const r = await getRedis();
   const raw = await r.get(key(tileSize, tileKey, period));
   return raw ? JSON.parse(raw) : null;
 }
 
-async function setTile(tileSize, tileKey, period, data, ttlSeconds = 24 * 3600) {
+async function setTile(tileSize, tileKey, period, data, ttlSeconds = 24 * 3600) {   //upisuje tile u redis sa zadatim TTL-om (podrazumevano 24h)
   const r = await getRedis();
   // nocni rebuild = dovoljno 24h, a i “fail-safe” ako cron preskoci
   await r.setEx(key(tileSize, tileKey, period), ttlSeconds, JSON.stringify(data));
 }
 
-async function deleteTile(tileSize, tileKey, period) {
+async function deleteTile(tileSize, tileKey, period) {      // briše tile iz redis-a po kljucu
   const r = await getRedis();
   await r.del(key(tileSize, tileKey, period));
 }

@@ -109,6 +109,19 @@ export const checkIfLiked = async (videoId, token) => {
   return data;
 };
 
+export async function startLive(videoId, token) {
+  const res = await fetch(`http://localhost:5000/api/videos/${videoId}/live/start`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json"
+    }
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Ne mogu da startujem live (HTTP ${res.status}).`);
+  return data;
+}
 export const getLatestPopularVideos = async () => {
   const res = await fetch(`${BASE_URL}/videos/popular/latest`);
   const data = await res.json();

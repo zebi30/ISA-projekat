@@ -9,6 +9,7 @@ import UploadVideoPage from "./pages/UploadVideoPage";
 import VideoWatch from "./pages/VideoWatch";
 import Activate from './pages/Activate';
 import MapView from './pages/MapView';
+import LiveWatch from "./pages/LiveWatch";
 import './App.css';
 
 function App() {
@@ -24,6 +25,7 @@ function App() {
         <Route path="/videos/:id" element={<VideoWatch />} />
         <Route path="/watch/:id" element={<VideoWatch />} />
         <Route path="/activate/:token" element={<Activate />} />
+        <Route path="/live/:id" element={<LiveWatch />} />
         <Route path="/map" element={<MapView />} />
       </Routes>
     </Router>

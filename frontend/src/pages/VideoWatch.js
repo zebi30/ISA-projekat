@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { getVideoComments, postComment, likeVideo, unlikeVideo } from "../services/api";
+import { startLive } from "../services/api";
 
 export default function VideoWatch() {
   const { id } = useParams();
@@ -59,14 +60,16 @@ export default function VideoWatch() {
 
   const loadVideo = useCallback(async () => {
     setLoading(true);
+
     try {
       const res = await fetch(`http://localhost:5000/api/videos/${id}/watch`, { method: "POST" });
       const data = await res.json().catch(() => ({}));
 
+      // scheduled lock sa 423 (backend već vraća payload)
       if (res.status === 423) {
         setVideo(null);
         setScheduleLock({
-          message: data.message || 'Video je zakazan i još nije dostupan.',
+          message: data.message || "Video je zakazan i još nije dostupan.",
           schedule_at: data.schedule_at,
           available_in_seconds: Number(data.available_in_seconds) || 0,
         });
@@ -79,22 +82,14 @@ export default function VideoWatch() {
         return;
       }
 
-      if (data?.schedule_at) {
-        const releaseTime = new Date(data.schedule_at).getTime();
-        const now = Date.now();
-        if (!Number.isNaN(releaseTime) && releaseTime > now) {
-          setVideo(null);
-          setScheduleLock({
-            message: 'Video je zakazan i još nije dostupan.',
-            schedule_at: data.schedule_at,
-            available_in_seconds: Math.ceil((releaseTime - now) / 1000),
-          });
-          return;
-        }
-      }
-
       setScheduleLock(null);
       setVideo(data);
+
+      if (data.is_live) {
+        navigate(`/live/${id}`);
+        return;
+      }
+
       setLikesCount(Number(data.likes) || 0);
       setLiveWindowEnded(false);
     } catch (e) {
@@ -104,6 +99,7 @@ export default function VideoWatch() {
       setLoading(false);
     }
   }, [id, navigate]);
+
 
   // Load video
   useEffect(() => {
@@ -275,9 +271,25 @@ export default function VideoWatch() {
     }
   };
 
+
   const handlePageChange = (newPage) => {
     setCurrentPage(newPage);
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleStartLive = async () => {
+    if (!isLoggedIn) {
+      alert("Morate se prijaviti.");
+      navigate("/login");
+      return;
+    }
+
+    try {
+      await startLive(id, token);
+      navigate(`/live/${id}`);
+    } catch (e) {
+      alert(e.message);
+    }
   };
 
   const isSynchronizedStream = Boolean(video?.stream_sync);
@@ -528,6 +540,24 @@ export default function VideoWatch() {
           >
             {isLiked ? "❤️" : "♡"} {likesCount} {isLiked ? "Lajk-ova" : "Lajk-ova"}
           </button>
+
+          {!video?.is_live && isLoggedIn && (
+          <button
+            onClick={handleStartLive}
+            style={{
+              padding: "10px 20px",
+              borderRadius: 10,
+              border: "none",
+              background: "#e53935",
+              color: "white",
+              fontWeight: 800,
+              cursor: "pointer"
+            }}
+          >
+            🔴 Start LIVE
+          </button>
+        )}
+
         </div>
 
         <div style={{ color: "#666", fontSize: '14px' }}>
