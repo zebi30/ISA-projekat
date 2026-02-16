@@ -241,13 +241,13 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "max(max_over_time(app_active_users_24h[24h]))",
+          "expr": "max(app_active_users_24h)",
           "legendFormat": "Aktivni korisnici",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Aktivni korisnici u poslednja 24h",
+      "title": "Broj trenutno aktivnih korisnika (24h)",
       "type": "stat"
     },
     {

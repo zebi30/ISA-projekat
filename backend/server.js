@@ -124,6 +124,18 @@ function getClientIp(req) {
 }
 
 function trackVisitorActivity(req, res, next) {
+  const requestPath = req.path || req.originalUrl || '';
+  const userAgent = String(req.headers['user-agent'] || '').toLowerCase();
+
+  if (
+    requestPath.startsWith('/metrics') ||
+    requestPath.startsWith('/health') ||
+    requestPath.startsWith('/whoami') ||
+    userAgent.includes('prometheus')
+  ) {
+    return next();
+  }
+
   try {
     let visitorKey = null;
     const authHeader = req.headers['authorization'];
