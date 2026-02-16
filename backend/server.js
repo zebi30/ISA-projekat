@@ -53,37 +53,57 @@ const appCpuUsagePercentGauge = new client.Gauge({
 
 const activeUsers24hGauge = new client.Gauge({
   name: 'app_active_users_24h',
-  help: 'Broj jedinstvenih korisnika aktivnih u poslednja 24h',
+  help: 'Broj jedinstvenih aktivnih posetilaca u poslednja 24h (korisnici + gosti)',
   registers: [metricsRegistry],
 });
 
-const userLastSeenMap = new Map();
+const activeVisitorsLastSeenMap = new Map();
 const ACTIVE_USERS_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 function cleanupInactiveUsers() {
   const cutoff = Date.now() - ACTIVE_USERS_WINDOW_MS;
-  for (const [userId, lastSeen] of userLastSeenMap.entries()) {
+  for (const [visitorKey, lastSeen] of activeVisitorsLastSeenMap.entries()) {
     if (lastSeen < cutoff) {
-      userLastSeenMap.delete(userId);
+      activeVisitorsLastSeenMap.delete(visitorKey);
     }
   }
-  activeUsers24hGauge.set(userLastSeenMap.size);
+  activeUsers24hGauge.set(activeVisitorsLastSeenMap.size);
 }
 
-function trackAuthenticatedActivity(req, res, next) {
+function getClientIp(req) {
+  const xForwardedFor = req.headers['x-forwarded-for'];
+  if (typeof xForwardedFor === 'string' && xForwardedFor.length > 0) {
+    return xForwardedFor.split(',')[0].trim();
+  }
+  return req.ip || req.socket?.remoteAddress || 'unknown-ip';
+}
+
+function trackVisitorActivity(req, res, next) {
   try {
+    let visitorKey = null;
     const authHeader = req.headers['authorization'];
-    if (!authHeader) return next();
 
-    const token = authHeader.split(' ')[1];
-    if (!token) return next();
-
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    if (decoded?.id) {
-      userLastSeenMap.set(String(decoded.id), Date.now());
+    if (authHeader) {
+      const token = authHeader.split(' ')[1];
+      if (token) {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        if (decoded?.id) {
+          visitorKey = `user:${decoded.id}`;
+        }
+      }
     }
+
+    if (!visitorKey) {
+      const ip = getClientIp(req);
+      const userAgent = req.headers['user-agent'] || 'unknown-agent';
+      visitorKey = `guest:${ip}:${userAgent}`;
+    }
+
+    activeVisitorsLastSeenMap.set(visitorKey, Date.now());
   } catch {
-    // ignore invalid/missing auth for monitoring middleware
+    const ip = getClientIp(req);
+    const userAgent = req.headers['user-agent'] || 'unknown-agent';
+    activeVisitorsLastSeenMap.set(`guest:${ip}:${userAgent}`, Date.now());
   }
 
   return next();
@@ -127,7 +147,7 @@ const metricsInterval = setInterval(collectAppMetrics, 5000);
 metricsInterval.unref();
 collectAppMetrics();
 
-app.use(trackAuthenticatedActivity);
+app.use(trackVisitorActivity);
 
 app.get('/metrics', async (req, res) => {
   try {
@@ -715,11 +735,15 @@ app.get('/api/videos/map', async (req, res) => {
       const result = await pool.query(
         `SELECT 
           v.id, 
-          v.title, 
+          v.title,
+          v.description,
           v.location,
           v.views,
+          v.likes,
           v.created_at,
-          u.username
+          u.username,
+          u.first_name,
+          u.last_name
          FROM videos v
          LEFT JOIN users u ON v.user_id = u.id
          WHERE v.location IS NOT NULL
@@ -791,11 +815,15 @@ app.get('/api/videos/map', async (req, res) => {
     const result = await pool.query(
       `SELECT 
         v.id, 
-        v.title, 
+        v.title,
+        v.description,
         v.location,
         v.views,
+        v.likes,
         v.created_at,
-        u.username
+        u.username,
+        u.first_name,
+        u.last_name
        FROM videos v
        LEFT JOIN users u ON v.user_id = u.id
        WHERE v.location IS NOT NULL
