@@ -6,18 +6,24 @@ const jwt = require('jsonwebtoken');
 const { Pool } = require('pg');
 const nodemailer = require('nodemailer');
 const crypto = require('crypto');
+const os = require('os');
 const path = require("path");
 const commentCache = require('./services/commentCache');
 const rateLimiter = require('./middlewares/rateLimiter');
-const mapTileCache = require("./services/mapTileCache");
-const tileService = require('./services/tileService');
-const { ensureTranscodeColumns } = require("./services/transcodeSchema");
+const { ensureVideoScheduleColumns } = require('./services/videoScheduleSchema');
+const { ensurePopularVideosTables } = require('./services/popularVideosSchema');
+const { recordVideoViewEvent, getLatestPopularVideos } = require('./services/popularVideosEtlService');
+const { startDailyPopularVideosEtlJob } = require('./jobs/popularVideosEtl');
+const client = require('prom-client');
 
 const videosRoutes = require("./routes/videos");
 const thumbnailsRoutes = require("./routes/thumbnails");
 
 const http = require("http");
 const { Server } = require("socket.io");
+
+const { startNightlyRebuild } = require("./jobs/rebuildMapTiles");
+const { startNightlyThumbnailCompression } = require("./jobs/compressOldThumbnails");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -26,6 +32,142 @@ app.use(express.json());
 
 // PostgreSQL pool
 const pool = require("./pool");
+
+const metricsRegistry = new client.Registry();
+client.collectDefaultMetrics({ register: metricsRegistry });
+
+const dbPoolTotalConnectionsGauge = new client.Gauge({
+  name: 'app_db_pool_total_connections',
+  help: 'Ukupan broj konekcija u PostgreSQL pool-u',
+  registers: [metricsRegistry],
+});
+
+const dbPoolIdleConnectionsGauge = new client.Gauge({
+  name: 'app_db_pool_idle_connections',
+  help: 'Broj idle konekcija u PostgreSQL pool-u',
+  registers: [metricsRegistry],
+});
+
+const dbPoolWaitingRequestsGauge = new client.Gauge({
+  name: 'app_db_pool_waiting_requests',
+  help: 'Broj zahteva koji čekaju slobodnu konekciju iz PostgreSQL pool-a',
+  registers: [metricsRegistry],
+});
+
+const appCpuUsagePercentGauge = new client.Gauge({
+  name: 'app_cpu_usage_percent',
+  help: 'Prosecno zauzece CPU u procentima u poslednjem mernom intervalu',
+  registers: [metricsRegistry],
+});
+
+const activeUsers24hGauge = new client.Gauge({
+  name: 'app_active_users_24h',
+  help: 'Broj jedinstvenih aktivnih posetilaca u poslednja 24h (korisnici + gosti)',
+  registers: [metricsRegistry],
+});
+
+const activeVisitorsLastSeenMap = new Map();
+const ACTIVE_USERS_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+function cleanupInactiveUsers() {
+  const cutoff = Date.now() - ACTIVE_USERS_WINDOW_MS;
+  for (const [visitorKey, lastSeen] of activeVisitorsLastSeenMap.entries()) {
+    if (lastSeen < cutoff) {
+      activeVisitorsLastSeenMap.delete(visitorKey);
+    }
+  }
+  activeUsers24hGauge.set(activeVisitorsLastSeenMap.size);
+}
+
+function getClientIp(req) {
+  const xForwardedFor = req.headers['x-forwarded-for'];
+  if (typeof xForwardedFor === 'string' && xForwardedFor.length > 0) {
+    return xForwardedFor.split(',')[0].trim();
+  }
+  return req.ip || req.socket?.remoteAddress || 'unknown-ip';
+}
+
+function trackVisitorActivity(req, res, next) {
+  try {
+    let visitorKey = null;
+    const authHeader = req.headers['authorization'];
+
+    if (authHeader) {
+      const token = authHeader.split(' ')[1];
+      if (token) {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        if (decoded?.id) {
+          visitorKey = `user:${decoded.id}`;
+        }
+      }
+    }
+
+    if (!visitorKey) {
+      const ip = getClientIp(req);
+      const userAgent = req.headers['user-agent'] || 'unknown-agent';
+      visitorKey = `guest:${ip}:${userAgent}`;
+    }
+
+    activeVisitorsLastSeenMap.set(visitorKey, Date.now());
+  } catch {
+    const ip = getClientIp(req);
+    const userAgent = req.headers['user-agent'] || 'unknown-agent';
+    activeVisitorsLastSeenMap.set(`guest:${ip}:${userAgent}`, Date.now());
+  }
+
+  return next();
+}
+
+function readCpuSnapshot() {
+  const cpus = os.cpus();
+  let idle = 0;
+  let total = 0;
+
+  for (const cpu of cpus) {
+    const times = cpu.times;
+    idle += times.idle;
+    total += times.user + times.nice + times.sys + times.idle + times.irq;
+  }
+
+  return { idle, total };
+}
+
+let previousCpuSnapshot = readCpuSnapshot();
+
+function collectAppMetrics() {
+  dbPoolTotalConnectionsGauge.set(pool.totalCount || 0);
+  dbPoolIdleConnectionsGauge.set(pool.idleCount || 0);
+  dbPoolWaitingRequestsGauge.set(pool.waitingCount || 0);
+
+  const current = readCpuSnapshot();
+  const idleDiff = current.idle - previousCpuSnapshot.idle;
+  const totalDiff = current.total - previousCpuSnapshot.total;
+  previousCpuSnapshot = current;
+
+  if (totalDiff > 0) {
+    const usagePercent = (1 - idleDiff / totalDiff) * 100;
+    appCpuUsagePercentGauge.set(Number(usagePercent.toFixed(2)));
+  }
+
+  cleanupInactiveUsers();
+}
+
+const metricsInterval = setInterval(collectAppMetrics, 5000);
+metricsInterval.unref();
+collectAppMetrics();
+
+app.use(trackVisitorActivity);
+
+app.get('/metrics', async (req, res) => {
+  try {
+    collectAppMetrics();
+    res.set('Content-Type', metricsRegistry.contentType);
+    res.send(await metricsRegistry.metrics());
+  } catch (error) {
+    console.error('Metrics endpoint error:', error);
+    res.status(500).send('Cannot collect metrics');
+  }
+});
 
 // Redis-based rate limiter with sliding window (5 requests per minute per IP)
 const loginLimiter = rateLimiter.createLimiter({
@@ -320,35 +462,79 @@ const authMiddleware = (req, res, next) => {
   }
 };
 
-// All videos sorted by date (newest first)   +period filter
-app.get('/api/videos', async (req, res) => {
-  const period = String(req.query.period || 'all'); // all | 30d | year
+function getSynchronizedOffsetSeconds(videoRow) {
+  if (!videoRow?.schedule_at) return 0;
 
-  let where = '';
-  const params = [];
+  const scheduleTimestamp = new Date(videoRow.schedule_at).getTime();
+  if (Number.isNaN(scheduleTimestamp)) return 0;
 
-  if (period === '30d') {
-    where = `WHERE v.created_at >= (NOW() - INTERVAL '30 days')`;
-  } else if (period === 'year') {
-    where = `WHERE v.created_at >= date_trunc('year', NOW())`;
-  } else if (period !== 'all') {
-    return res.status(400).json({ error: 'Invalid period. Use all | 30d | year' });
-  }
+  const now = Date.now();
+  return Math.max(0, Math.floor((now - scheduleTimestamp) / 1000));
+}
+
+function buildScheduleLockPayload(scheduleAt) {
+  const releaseTime = new Date(scheduleAt).getTime();
+  const now = Date.now();
+  return {
+    message: "Video je zakazan i još nije dostupan.",
+    schedule_at: scheduleAt,
+    available_in_seconds: Math.ceil((releaseTime - now) / 1000),
+  };
+}
+
+async function blockScheduledVideoAccess(req, res, next) {
+  const id = Number(req.params.id);
+  if (!id) return next();
 
   try {
+    const result = await pool.query(
+      'SELECT schedule_at FROM videos WHERE id = $1',
+      [id]
+    );
+
+    if (result.rows.length === 0) return next();
+
+    const scheduleAt = result.rows[0].schedule_at;
+    if (!scheduleAt) return next();
+
+    const releaseTime = new Date(scheduleAt).getTime();
+    if (!Number.isNaN(releaseTime) && releaseTime > Date.now()) {
+      return res.status(423).json(buildScheduleLockPayload(scheduleAt));
+    }
+
+    return next();
+  } catch (err) {
+    console.error('Schedule lock check failed:', err);
+    return res.status(500).json({ message: 'Server error' });
+  }
+}
+
+// All videos sorted by date (newest first)
+app.get('/api/videos', async (req, res) => {
+  try {
     const result = await pool.query(`
-      SELECT v.id, v.title, v.description, v.thumbnail, v.created_at, v.likes, v.views, v.is_live,
+      SELECT v.id, v.title, v.description, v.thumbnail, v.created_at, v.schedule_at, v.likes, v.views, v.is_live,
             v.transcode_status, v.transcoded_outputs, v.transcode_error,
              u.id as user_id, u.username, u.first_name, u.last_name
       FROM videos v
       JOIN users u ON v.user_id = u.id
-      ${where}
+      WHERE v.schedule_at IS NULL OR v.schedule_at <= NOW()
       ORDER BY v.created_at DESC
-    `, params);
+    `);
     res.json(result.rows);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Greska pri ucitavanju videa.'});
+  }
+});
+
+app.get('/api/videos/popular/latest', async (req, res) => {
+  try {
+    const latest = await getLatestPopularVideos();
+    return res.json(latest);
+  } catch (error) {
+    console.error('Error fetching popular videos snapshot:', error);
+    return res.status(500).json({ message: 'Server error' });
   }
 });
 
@@ -371,7 +557,11 @@ app.get('/api/users/:id/profile', async (req, res) => {
     
     // Get videos the user posted
     const videosResult = await pool.query(
-      'SELECT id, title, description, thumbnail, created_at FROM videos WHERE user_id = $1 ORDER BY created_at DESC',
+      `SELECT id, title, description, thumbnail, created_at, schedule_at
+       FROM videos
+       WHERE user_id = $1
+         AND (schedule_at IS NULL OR schedule_at <= NOW())
+       ORDER BY created_at DESC`,
       [id]
     );
     
@@ -394,6 +584,7 @@ app.get('/api/users/:id/profile', async (req, res) => {
     res.status(500).json({ error: 'Greska pri ucitavanju profila.' });
   }
 });
+
 app.get('/api/videos/:id/comments', async (req, res) => {
   const { id } = req.params;
   const page = parseInt(req.query.page) || 1;
@@ -583,70 +774,14 @@ function getTileKey(lat, lng, tileSize = 0.1) {
   return `tile_${tileX}_${tileY}`;
 }
 
-// GET /api/videos/tiles - Tile sistem sa dinamičkim grid-om zavisno od zoom nivoa
-app.get('/api/videos/tiles', async (req, res) => {
-  const { zoomLevel, minLat, maxLat, minLng, maxLng } = req.query;
-
-  try {
-    // Validacija parametara
-    if (!zoomLevel || minLat === undefined || maxLat === undefined || 
-        minLng === undefined || maxLng === undefined) {
-      return res.status(400).json({ 
-        error: 'Nedostaju parametri: zoomLevel, minLat, maxLat, minLng, maxLng' 
-      });
-    }
-
-    // Učitaj sve videe sa lokacijom iz baze
-    const result = await pool.query(`
-      SELECT v.id, v.title, v.description, v.thumbnail, v.created_at,
-             COALESCE(v.likes, 0) as likes,
-             COALESCE(v.views, 0) as views,
-             v.location,
-             u.id as user_id, u.username, u.first_name, u.last_name
-      FROM videos v
-      JOIN users u ON v.user_id = u.id
-      WHERE v.location IS NOT NULL
-      ORDER BY v.created_at DESC
-    `);
-
-    const allVideos = result.rows;
-
-    // Primeni tile sistem
-    const bounds = {
-      minLat: parseFloat(minLat),
-      maxLat: parseFloat(maxLat),
-      minLng: parseFloat(minLng),
-      maxLng: parseFloat(maxLng)
-    };
-
-    const tileResult = tileService.getVideosForViewport(
-      allVideos,
-      bounds,
-      parseInt(zoomLevel)
-    );
-
-    res.json({
-      videos: tileResult.videos,
-      count: tileResult.count,
-      totalCount: allVideos.length,
-      zoomLevel: tileResult.zoomLevel,
-      tiles: tileResult.config,
-      message: `Prikazujem ${tileResult.count} od ${allVideos.length} videa (Zoom: ${zoomLevel})`
-    });
-
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Greška pri učitavanju tile videa.' });
-  }
-});
-
 // GET /api/videos/map/count - brz count videa sa lokacijom
 app.get('/api/videos/map/count', async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT COUNT(*) as count 
        FROM videos 
-       WHERE location IS NOT NULL`
+       WHERE location IS NOT NULL
+         AND (schedule_at IS NULL OR schedule_at <= NOW())`
     );
     res.json({ count: parseInt(result.rows[0].count) });
   } catch (e) {
@@ -666,7 +801,8 @@ app.get('/api/videos/map/bounds', async (req, res) => {
         MAX((location->>'longitude')::numeric) as maxLng,
         COUNT(*) as count
        FROM videos 
-       WHERE location IS NOT NULL`
+         WHERE location IS NOT NULL
+           AND (schedule_at IS NULL OR schedule_at <= NOW())`
     );
     
     const bounds = result.rows[0];
@@ -690,41 +826,30 @@ app.get('/api/videos/map/bounds', async (req, res) => {
   }
 });
 
-function buildPeriodSql(period) {
-  if (period === "30d") return `AND v.created_at >= NOW() - INTERVAL '30 days'`;
-  if (period === "year") return `AND v.created_at >= date_trunc('year', NOW())`;
-  return "";
-}
-
-function getTileBounds(tileX, tileY, tileSize) {
-  const minLng = tileX * tileSize;
-  const maxLng = (tileX + 1) * tileSize;
-  const minLat = tileY * tileSize;
-  const maxLat = (tileY + 1) * tileSize;
-  return { minLat, maxLat, minLng, maxLng };
-}
-
 // GET /api/videos/map - tile-based loading sa bounds
 app.get('/api/videos/map', async (req, res) => {
   try {
-    const { minLat, maxLat, minLng, maxLng, tileSize = 0.1, period = "all" } = req.query;
-    const periodStr = String(period || "all");
-    const tileSizeNum = Number(tileSize) || 0.1;
-    
+    const { minLat, maxLat, minLng, maxLng, tileSize = 0.1 } = req.query;
+
     // Ako nema bounds parametara, vrati sve (fallback za kompatibilnost)
     if (!minLat || !maxLat || !minLng || !maxLng) {
       const result = await pool.query(
         `SELECT 
           v.id, 
-          v.title, 
+          v.title,
+          v.description,
           v.location,
           v.views,
+          v.likes,
           v.created_at,
           v.is_live,
-          u.username
+          u.username,
+          u.first_name,
+          u.last_name
          FROM videos v
          LEFT JOIN users u ON v.user_id = u.id
          WHERE v.location IS NOT NULL
+           AND (v.schedule_at IS NULL OR v.schedule_at <= NOW())
          ORDER BY v.created_at DESC
          LIMIT 1000`
       );
@@ -732,10 +857,7 @@ app.get('/api/videos/map', async (req, res) => {
       return res.json({ 
         videos: result.rows,
         count: result.rows.length,
-        cached: false,
-        tiles: 0,
-        cachedTiles: 0,
-        missedTiles: 0
+        cached: false
       });
     }
 
@@ -755,6 +877,8 @@ app.get('/api/videos/map', async (req, res) => {
 
     // Generiši tile keys za sve tiles u vidljivom području
     const tiles = [];
+    const tileSizeNum = parseFloat(tileSize);
+    
     for (let lat = Math.floor(bounds.minLat / tileSizeNum) * tileSizeNum; 
          lat <= bounds.maxLat; 
          lat += tileSizeNum) {
@@ -765,96 +889,81 @@ app.get('/api/videos/map', async (req, res) => {
       }
     }
 
-
+    // Pokušaj da učitaš iz cache-a (Redis L2)
+    const cacheKey = `map_tiles:${tiles.join(',')}`;
+    let cachedData = null;
     
-    const periodSql = buildPeriodSql(periodStr);
-
-    let hits = 0, misses = 0;
-    const collected = [];
-
-    for (const tileKey of tiles) {
-      // 1) cache lookup (per tile)
-      let tilePayload = null;
-      try {
-        tilePayload = await mapTileCache.getTile(tileSizeNum, tileKey, periodStr);
-      } catch (e) {
-        // ako redis padne, samo nastavi na DB
+    try {
+      if (commentCache.redisClient && commentCache.redisClient.isReady) {
+        const cached = await commentCache.redisClient.get(cacheKey);
+        if (cached) {
+          cachedData = JSON.parse(cached);
+          console.log(`[CACHE HIT] Map tiles: ${tiles.length} tiles`);
+        }
       }
-
-      if (tilePayload) {
-        hits++;
-        collected.push(...(tilePayload.videos || []));
-        continue;
-      }
-      
-      misses++;
-
-      // 2) tileKey -> tileX, tileY
-      const parts = tileKey.split("_"); // ["tile", "x", "y"]
-      const tileX = Number(parts[1]);
-      const tileY = Number(parts[2]);
-
-      if (Number.isNaN(tileX) || Number.isNaN(tileY)) {
-        continue;
-      }
-      
-      const tb = getTileBounds(tileX, tileY, tileSizeNum);
-
-      // 3) DB query za samo taj tile
-      const dbRes = await pool.query(
-        `
-        SELECT 
-          v.id, v.title, v.location, v.views, v.created_at, u.username
-        FROM videos v
-        LEFT JOIN users u ON v.user_id = u.id
-        WHERE v.location IS NOT NULL
-          ${periodSql}
-          AND (v.location->>'latitude')::numeric >= $1
-          AND (v.location->>'latitude')::numeric <  $2
-          AND (v.location->>'longitude')::numeric >= $3
-          AND (v.location->>'longitude')::numeric <  $4
-        ORDER BY v.created_at DESC
-        LIMIT 500
-        `,
-        [tb.minLat, tb.maxLat, tb.minLng, tb.maxLng]
-      );
-
-      const payloadToCache = {
-        tileKey,
-        videos: dbRes.rows,
-        count: dbRes.rows.length,
-        period: periodStr,
-        tileSize: tileSizeNum,
-        rebuiltAt: new Date().toISOString()
-      };
-
-      // 4) upisi u cache (24h)
-      try {
-        await mapTileCache.setTile(tileSizeNum, tileKey, periodStr, payloadToCache, 24 * 3600);
-      } catch (e) {}
-
-      collected.push(...dbRes.rows);
+    } catch (cacheErr) {
+      console.error('Cache read error:', cacheErr);
     }
 
-    // de-dupe po id (jer tiles mogu da se "dodirnu" na granici)
-    const uniq = new Map();
-    for (const v of collected) uniq.set(v.id, v);
+    if (cachedData) {
+      return res.json({ 
+        ...cachedData,
+        cached: true,
+        tiles: tiles.length
+      });
+    }
 
-    const videos = Array.from(uniq.values())
-      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    // Query sa bounding box filterom
+    const result = await pool.query(
+      `SELECT 
+        v.id, 
+        v.title,
+        v.description,
+        v.location,
+        v.views,
+        v.likes,
+        v.created_at,
+        u.username,
+        u.first_name,
+        u.last_name
+       FROM videos v
+       LEFT JOIN users u ON v.user_id = u.id
+       WHERE v.location IS NOT NULL
+         AND (v.schedule_at IS NULL OR v.schedule_at <= NOW())
+         AND (v.location->>'latitude')::numeric >= $1
+         AND (v.location->>'latitude')::numeric <= $2
+         AND (v.location->>'longitude')::numeric >= $3
+         AND (v.location->>'longitude')::numeric <= $4
+       ORDER BY v.created_at DESC
+       LIMIT 500`,
+      [bounds.minLat, bounds.maxLat, bounds.minLng, bounds.maxLng]
+    );
 
-    return res.json({
-      videos,
-      count: videos.length,
+    const responseData = {
+      videos: result.rows,
+      count: result.rows.length,
       bounds,
-      tiles: tiles.length,
-      cachedTiles: hits,
-      missedTiles: misses,
-      cached: misses === 0,
-      period: periodStr,
-      tileSize: tileSizeNum
-    });
+      tiles: tiles.length
+    };
 
+    // Keširanje rezultata (5 minuta TTL)
+    try {
+      if (commentCache.redisClient && commentCache.redisClient.isReady) {
+        await commentCache.redisClient.setEx(
+          cacheKey, 
+          300, // 5 minuta
+          JSON.stringify(responseData)
+        );
+        console.log(`[CACHE SET] Map tiles: ${tiles.length} tiles, ${result.rows.length} videos`);
+      }
+    } catch (cacheErr) {
+      console.error('Cache write error:', cacheErr);
+    }
+
+    res.json({ 
+      ...responseData,
+      cached: false
+    });
   } catch (e) {
     console.error('Error fetching video locations:', e);
     res.status(500).json({ message: "Server error" });
@@ -862,15 +971,15 @@ app.get('/api/videos/map', async (req, res) => {
 });
 
 // Get a singular video via id (public)
-app.get("/api/videos/:id", async (req, res) => {
+app.get("/api/videos/:id", blockScheduledVideoAccess, async (req, res) => {
   const id = Number(req.params.id);
   if (!id) return res.status(400).json({ message: "Invalid video id" });
 
   try {
     const result = await pool.query(
       `
-      SELECT v.id, v.title, v.description, v.video_path, v.thumbnail, v.views, v.likes, v.created_at, v.is_live,
-            v.transcode_status, v.transcoded_outputs, v.transcode_error,
+      SELECT v.id, v.title, v.description, v.video_path, v.thumbnail, v.views, v.likes, v.created_at, v.is_live,  v.schedule_at,
+            v.transcode_status, emphasize_outputs, v.transcode_error,
              u.id as user_id, u.username, u.first_name, u.last_name
       FROM videos v
       JOIN users u ON v.user_id = u.id
@@ -883,7 +992,20 @@ app.get("/api/videos/:id", async (req, res) => {
       return res.status(404).json({ message: "Video nije pronadjen" });
     }
 
-    res.json(result.rows[0]);
+    const row = result.rows[0];
+    if (row.schedule_at) {
+      const releaseTime = new Date(row.schedule_at).getTime();
+      const now = Date.now();
+      if (!Number.isNaN(releaseTime) && releaseTime > now) {
+        return res.status(423).json({
+          message: "Video je zakazan i još nije dostupan.",
+          schedule_at: row.schedule_at,
+          available_in_seconds: Math.ceil((releaseTime - now) / 1000),
+        });
+      }
+    }
+
+    res.json(row);
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server error" });
@@ -891,21 +1013,14 @@ app.get("/api/videos/:id", async (req, res) => {
 });
 
 // Watch video endpoint - increments views count
-app.post("/api/videos/:id/watch", async (req, res) => {
+app.post("/api/videos/:id/watch", blockScheduledVideoAccess, async (req, res) => {
   const id = Number(req.params.id);
   if (!id) return res.status(400).json({ message: "Invalid video id" });
 
   try {
-    // Increment views
-    await pool.query(
-      'UPDATE videos SET views = views + 1 WHERE id = $1',
-      [id]
-    );
-
-    // Get video data
     const result = await pool.query(
       `
-      SELECT v.id, v.title, v.description, v.video_path, v.thumbnail, v.views, v.likes, v.created_at, v.is_live,
+      SELECT v.id, v.title, v.description, v.video_path, v.thumbnail, v.views, v.likes, v.created_at, v.is_live, v.schedule_at,
             v.transcode_status, v.transcoded_outputs, v.transcode_error,
              u.id as user_id, u.username, u.first_name, u.last_name
       FROM videos v
@@ -919,7 +1034,34 @@ app.post("/api/videos/:id/watch", async (req, res) => {
       return res.status(404).json({ message: "Video nije pronadjen" });
     }
 
-    res.json(result.rows[0]);
+    const row = result.rows[0];
+    if (row.schedule_at) {
+      const releaseTime = new Date(row.schedule_at).getTime();
+      const now = Date.now();
+      if (!Number.isNaN(releaseTime) && releaseTime > now) {
+        return res.status(423).json({
+          message: "Video je zakazan i još nije dostupan.",
+          schedule_at: row.schedule_at,
+          available_in_seconds: Math.ceil((releaseTime - now) / 1000),
+        });
+      }
+    }
+
+    const updatedViews = await pool.query(
+      'UPDATE videos SET views = views + 1 WHERE id = $1 RETURNING views',
+      [id]
+    );
+    row.views = updatedViews.rows[0]?.views ?? row.views;
+    await recordVideoViewEvent(id);
+
+    const playbackOffsetSeconds = getSynchronizedOffsetSeconds(row);
+
+    res.json({
+      ...row,
+      playback_offset_seconds: playbackOffsetSeconds,
+      stream_sync: Boolean(row.schedule_at),
+      server_time: new Date().toISOString(),
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server error" });
@@ -965,6 +1107,8 @@ app.post("/api/videos/:id/live/start", authMiddleware, async (req, res) => {
 // statički pristup video fajlovima (video_path koristi ovo)
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
+// IMPORTANT: Specific routes MUST come BEFORE generic app.use("/api/videos", videosRoutes)
+// Otherwise videosRoutes will catch all /api/videos/* routes
 app.use("/api/videos", videosRoutes);
 app.use("/api/thumbnails", thumbnailsRoutes);
 
@@ -975,9 +1119,6 @@ app.use((err, req, res, next) => {
     message: err.message || "Server error",
   });
 });
-
-const { startNightlyRebuild } = require("./jobs/rebuildMapTiles");
-const { startNightlyThumbnailCompression } = require("./jobs/compressOldThumbnails");
 
 //app.listen(PORT, () => console.log(`Backend running on ${PORT}`));
 const server = http.createServer(app);      //real time razmena poruka, kad neko udje na video -> automatski se pridruzi chatroomu, ne cuva se istorija
@@ -1063,7 +1204,26 @@ io.on("connection", (socket) => {
   });
 });
 
-server.listen(PORT, () => console.log(`Backend running on ${PORT}`));
+async function startServer() {
+  // ovde inicijalizuj sve pre nego sto server krene da prima requestove
+  await ensureTranscodeColumns();
+
+  await Promise.all([
+    ensureVideoScheduleColumns(),
+    ensurePopularVideosTables(),
+  ]);
+
+  startNightlyRebuild();
+  startNightlyThumbnailCompression();
+  startDailyPopularVideosEtlJob();
+
+  server.listen(PORT, () => console.log(`Backend running on ${PORT}`));
+}
+
+startServer().catch((error) => {
+  console.error("Failed to start backend:", error);
+  process.exit(1);
+});
 
 (async function initBackground() {
   try {

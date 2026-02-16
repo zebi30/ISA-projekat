@@ -136,12 +136,12 @@ async function seedEuropeVideos() {
       
       // Pokušaj sa postojećim videom iz baze
       const existingVideo = await client.query(
-        `SELECT video_path, thumbnail_path FROM videos WHERE video_path IS NOT NULL LIMIT 1`
+        `SELECT video_path, thumbnail FROM videos WHERE video_path IS NOT NULL LIMIT 1`
       );
       
       if (existingVideo.rows.length > 0) {
         videoPath = existingVideo.rows[0].video_path;
-        thumbnailPath = existingVideo.rows[0].thumbnail_path;
+        thumbnailPath = existingVideo.rows[0].thumbnail;
         console.log(`✓ Koristim postojeći video: ${videoPath}\n`);
       } else {
         console.log(`⚠ UPOZORENJE: Nema video fajla - test videi neće raditi!\n`);

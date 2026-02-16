@@ -28,6 +28,7 @@ async function rebuildAllTiles(tileSize = 0.1) {
       FROM videos v
       LEFT JOIN users u ON v.user_id = u.id
       WHERE v.location IS NOT NULL
+        AND (v.schedule_at IS NULL OR v.schedule_at <= NOW())
         ${pf}
       ORDER BY v.created_at DESC
       `
