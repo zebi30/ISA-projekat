@@ -14,6 +14,7 @@ const { ensureVideoScheduleColumns } = require('./services/videoScheduleSchema')
 const { ensurePopularVideosTables } = require('./services/popularVideosSchema');
 const { recordVideoViewEvent, getLatestPopularVideos } = require('./services/popularVideosEtlService');
 const { startDailyPopularVideosEtlJob } = require('./jobs/popularVideosEtl');
+const { getRedis } = require('./services/redisClient');
 const client = require('prom-client');
 
 const videosRoutes = require("./routes/videos");
@@ -65,6 +66,7 @@ const activeUsers24hGauge = new client.Gauge({
 
 const activeVisitorsLastSeenMap = new Map();
 const ACTIVE_USERS_WINDOW_MS = 24 * 60 * 60 * 1000;
+const ACTIVE_USERS_REDIS_KEY = 'metrics:active_visitors_24h';
 const watchPartyRooms = new Map();
 
 function buildWatchPartyState(room) {
@@ -101,14 +103,51 @@ function createWatchPartyRoom({ videoId, owner }) {
   return room;
 }
 
-function cleanupInactiveUsers() {
+function cleanupInactiveUsersLocal() {
   const cutoff = Date.now() - ACTIVE_USERS_WINDOW_MS;
   for (const [visitorKey, lastSeen] of activeVisitorsLastSeenMap.entries()) {
     if (lastSeen < cutoff) {
       activeVisitorsLastSeenMap.delete(visitorKey);
     }
   }
-  activeUsers24hGauge.set(activeVisitorsLastSeenMap.size);
+}
+
+async function refreshActiveUsersGaugeFromRedis() {
+  try {
+    const redis = await getRedis();
+    if (!redis || !redis.isOpen) {
+      cleanupInactiveUsersLocal();
+      activeUsers24hGauge.set(activeVisitorsLastSeenMap.size);
+      return;
+    }
+
+    const cutoff = Date.now() - ACTIVE_USERS_WINDOW_MS;
+    await redis.zRemRangeByScore(ACTIVE_USERS_REDIS_KEY, '-inf', cutoff);
+    const uniqueCount = await redis.zCard(ACTIVE_USERS_REDIS_KEY);
+    activeUsers24hGauge.set(Number(uniqueCount) || 0);
+  } catch {
+    cleanupInactiveUsersLocal();
+    activeUsers24hGauge.set(activeVisitorsLastSeenMap.size);
+  }
+}
+
+function buildGuestVisitorKey(req) {
+  const ip = getClientIp(req);
+  const userAgent = req.headers['user-agent'] || 'unknown-agent';
+  const raw = `${ip}|${userAgent}`;
+  const hash = crypto.createHash('sha1').update(raw).digest('hex');
+  return `guest:${hash}`;
+}
+
+function trackVisitorInRedis(visitorKey) {
+  const now = Date.now();
+
+  getRedis()
+    .then((redis) => {
+      if (!redis || !redis.isOpen) return;
+      return redis.zAdd(ACTIVE_USERS_REDIS_KEY, [{ score: now, value: visitorKey }]);
+    })
+    .catch(() => {});
 }
 
 function getClientIp(req) {
@@ -120,6 +159,18 @@ function getClientIp(req) {
 }
 
 function trackVisitorActivity(req, res, next) {
+  const requestPath = req.path || req.originalUrl || '';
+  const userAgent = String(req.headers['user-agent'] || '').toLowerCase();
+
+  if (
+    requestPath.startsWith('/metrics') ||
+    requestPath.startsWith('/health') ||
+    requestPath.startsWith('/whoami') ||
+    userAgent.includes('prometheus')
+  ) {
+    return next();
+  }
+
   try {
     let visitorKey = null;
     const authHeader = req.headers['authorization'];
@@ -135,16 +186,15 @@ function trackVisitorActivity(req, res, next) {
     }
 
     if (!visitorKey) {
-      const ip = getClientIp(req);
-      const userAgent = req.headers['user-agent'] || 'unknown-agent';
-      visitorKey = `guest:${ip}:${userAgent}`;
+      visitorKey = buildGuestVisitorKey(req);
     }
 
     activeVisitorsLastSeenMap.set(visitorKey, Date.now());
+    trackVisitorInRedis(visitorKey);
   } catch {
-    const ip = getClientIp(req);
-    const userAgent = req.headers['user-agent'] || 'unknown-agent';
-    activeVisitorsLastSeenMap.set(`guest:${ip}:${userAgent}`, Date.now());
+    const fallbackVisitorKey = buildGuestVisitorKey(req);
+    activeVisitorsLastSeenMap.set(fallbackVisitorKey, Date.now());
+    trackVisitorInRedis(fallbackVisitorKey);
   }
 
   return next();
@@ -166,7 +216,7 @@ function readCpuSnapshot() {
 
 let previousCpuSnapshot = readCpuSnapshot();
 
-function collectAppMetrics() {
+async function collectAppMetrics() {
   dbPoolTotalConnectionsGauge.set(pool.totalCount || 0);
   dbPoolIdleConnectionsGauge.set(pool.idleCount || 0);
   dbPoolWaitingRequestsGauge.set(pool.waitingCount || 0);
@@ -181,12 +231,18 @@ function collectAppMetrics() {
     appCpuUsagePercentGauge.set(Number(usagePercent.toFixed(2)));
   }
 
-  cleanupInactiveUsers();
+  await refreshActiveUsersGaugeFromRedis();
 }
 
-const metricsInterval = setInterval(collectAppMetrics, 5000);
+const metricsInterval = setInterval(() => {
+  collectAppMetrics().catch((error) => {
+    console.error('Periodic metrics collection error:', error.message);
+  });
+}, 5000);
 metricsInterval.unref();
-collectAppMetrics();
+collectAppMetrics().catch((error) => {
+  console.error('Initial metrics collection error:', error.message);
+});
 
 app.use(trackVisitorActivity);
 

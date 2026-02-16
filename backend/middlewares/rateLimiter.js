@@ -9,10 +9,13 @@ class RedisRateLimiter {
 
   async initializeRedis() {
     try {
+      const redisHost = process.env.REDIS_HOST || 'localhost';
+      const redisPort = Number(process.env.REDIS_PORT || 6379);
+
       this.client = redis.createClient({
-        host: 'localhost',
-        port: 6379,
         socket: {
+          host: redisHost,
+          port: redisPort,
           connectTimeout: 5000,
           reconnectStrategy: (retries) => {
             if (retries > 3) {

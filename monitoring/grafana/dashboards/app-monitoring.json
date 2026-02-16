@@ -79,7 +79,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "app_db_pool_total_connections - app_db_pool_idle_connections",
+          "expr": "sum(app_db_pool_total_connections) - sum(app_db_pool_idle_connections)",
           "legendFormat": "Aktivne DB konekcije",
           "range": true,
           "refId": "A"
@@ -90,7 +90,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "app_db_pool_idle_connections",
+          "expr": "sum(app_db_pool_idle_connections)",
           "legendFormat": "Idle DB konekcije",
           "range": true,
           "refId": "B"
@@ -101,7 +101,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "app_db_pool_waiting_requests",
+          "expr": "sum(app_db_pool_waiting_requests)",
           "legendFormat": "Čekajuće DB konekcije",
           "range": true,
           "refId": "C"
@@ -172,7 +172,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "avg_over_time(app_cpu_usage_percent[5m])",
+          "expr": "avg(avg_over_time(app_cpu_usage_percent[5m]))",
           "legendFormat": "CPU avg 5m",
           "range": true,
           "refId": "A"
@@ -241,13 +241,13 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "max_over_time(app_active_users_24h[24h])",
+          "expr": "max(app_active_users_24h)",
           "legendFormat": "Aktivni korisnici",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Aktivni korisnici u poslednja 24h",
+      "title": "Broj trenutno aktivnih korisnika (24h)",
       "type": "stat"
     },
     {
