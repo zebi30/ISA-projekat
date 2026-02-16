@@ -128,3 +128,25 @@ export const getLatestPopularVideos = async () => {
   if (!res.ok) throw new Error(data.message || data.error || 'Failed to fetch popular videos');
   return data;
 };
+
+export const createWatchPartyRoom = async (videoId, token) => {
+  const res = await fetch(`${BASE_URL}/watch-party/rooms`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({ videoId }),
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || data.message || 'Failed to create Watch Party room');
+  return data;
+};
+
+export const getWatchPartyRoom = async (roomId) => {
+  const res = await fetch(`${BASE_URL}/watch-party/rooms/${roomId}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || data.message || 'Watch Party room not found');
+  return data;
+};

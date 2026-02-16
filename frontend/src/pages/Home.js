@@ -6,6 +6,7 @@ export default function Home() {
   const [videos, setVideos] = useState([]);
   const [popularVideos, setPopularVideos] = useState([]);
   const [popularRunAt, setPopularRunAt] = useState(null);
+  const [joinRoomId, setJoinRoomId] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const navigate = useNavigate();
@@ -48,6 +49,13 @@ export default function Home() {
   const handleLogout = () => {
     localStorage.removeItem('token');
     window.location.reload();
+  };
+
+  const handleJoinWatchParty = (e) => {
+    e.preventDefault();
+    const roomId = joinRoomId.trim();
+    if (!roomId) return;
+    navigate(`/party/${roomId}`);
   };
 
   const handleWatchClick1 = (video) => {
@@ -250,6 +258,47 @@ export default function Home() {
             </p>
           </div>
         )}
+
+        <div style={{
+          padding: '16px',
+          background: 'white',
+          borderRadius: '12px',
+          marginBottom: '24px',
+          boxShadow: '0 2px 8px rgba(0,0,0,0.08)'
+        }}>
+          <h3 style={{ margin: '0 0 10px 0', fontSize: '18px', color: '#333' }}>
+            Join by Room ID
+          </h3>
+          <form onSubmit={handleJoinWatchParty} style={{ display: 'flex', gap: '10px' }}>
+            <input
+              value={joinRoomId}
+              onChange={(e) => setJoinRoomId(e.target.value)}
+              placeholder="Unesi Room ID"
+              style={{
+                flex: 1,
+                padding: '10px 12px',
+                borderRadius: '8px',
+                border: '1px solid #ddd',
+                fontSize: '14px'
+              }}
+            />
+            <button
+              type="submit"
+              disabled={!joinRoomId.trim()}
+              style={{
+                padding: '10px 14px',
+                borderRadius: '8px',
+                border: 'none',
+                background: !joinRoomId.trim() ? '#ccc' : '#6a1b9a',
+                color: 'white',
+                fontWeight: 600,
+                cursor: !joinRoomId.trim() ? 'not-allowed' : 'pointer'
+              }}
+            >
+              Join Room
+            </button>
+          </form>
+        </div>
 
         {isLoggedIn && (
           <div style={{
