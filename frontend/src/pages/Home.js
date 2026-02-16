@@ -7,18 +7,17 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const navigate = useNavigate();
-  const [period, setPeriod] = useState('all'); // all | 30d | year
   
   const token = localStorage.getItem('token');
   const isLoggedIn = !!token;
 
   useEffect(() => {
     fetchVideos();
-  }, [period]);
+  }, []);
 
   const fetchVideos = async () => {
     try {
-      const data = await getPublicVideos(period);
+      const data = await getPublicVideos();
       setVideos(data);
     } catch (err) {
       setError(err.message);
@@ -32,8 +31,29 @@ export default function Home() {
     window.location.reload();
   };
 
-  const handleWatchClick = (videoId) => {
-    navigate(`/videos/${videoId}`);
+  const handleWatchClick = async (video) => {
+    if (video?.schedule_at) {
+      const releaseTime = new Date(video.schedule_at).getTime();
+      const now = Date.now();
+      if (!Number.isNaN(releaseTime) && releaseTime > now) {
+        alert(`Video još nije dostupan. Dostupan je od ${new Date(video.schedule_at).toLocaleString('sr-RS')}.`);
+        return;
+      }
+    }
+
+    try {
+      const res = await fetch(`http://localhost:5000/api/videos/${video.id}`);
+      const data = await res.json().catch(() => ({}));
+
+      if (res.status === 423) {
+        alert(`Video još nije dostupan. Dostupan je od ${data.schedule_at ? new Date(data.schedule_at).toLocaleString('sr-RS') : 'zakazanog termina'}.`);
+        return;
+      }
+    } catch (_) {
+      // fallback: ako precheck ne uspe, pusti postojeće ponašanje
+    }
+
+    navigate(`/videos/${video.id}`);
   };
 
   if (loading) {
@@ -214,31 +234,6 @@ export default function Home() {
           Najnoviji videi
         </h2>
         
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 16 }}>
-          <span style={{ fontSize: 14, color: '#555', fontWeight: 600 }}>Period:</span>
-
-          <select
-            value={period}
-            onChange={(e) => {
-              setLoading(true);
-              setPeriod(e.target.value);
-            }}
-            style={{
-              padding: '8px 10px',
-              borderRadius: 8,
-              border: '1px solid #ddd',
-              background: 'white',
-              cursor: 'pointer',
-              fontWeight: 600
-            }}
-          >
-            <option value="all">Sve vreme</option>
-            <option value="30d">Poslednjih 30 dana</option>
-            <option value="year">Tekuća godina</option>
-          </select>
-        </div>
-
-
         {videos.length === 0 ? (
           <div style={{ 
             textAlign: 'center', 
@@ -258,7 +253,7 @@ export default function Home() {
             {videos.map((video) => (
               <div 
                 key={video.id} 
-                onClick={() => handleWatchClick(video.id)}
+                onClick={() => handleWatchClick(video)}
                 style={{ 
                   background: 'white', 
                   borderRadius: '12px',
@@ -334,6 +329,21 @@ export default function Home() {
                   }}>
                     {video.title}
                   </h3>
+
+                  {video.schedule_at && (
+                    <div style={{
+                      marginBottom: '8px',
+                      display: 'inline-block',
+                      background: '#ffe9ea',
+                      color: '#b71c1c',
+                      padding: '4px 8px',
+                      borderRadius: '999px',
+                      fontSize: '11px',
+                      fontWeight: 700
+                    }}>
+                      🔴 UŽIVO upload
+                    </div>
+                  )}
                   
                   <p style={{ 
                     margin: '8px 0', 

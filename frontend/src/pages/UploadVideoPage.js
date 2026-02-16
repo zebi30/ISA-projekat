@@ -4,6 +4,17 @@ import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
+function getNowLocalMinuteString() {
+  const now = new Date();
+  now.setSeconds(0, 0);
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  const hours = String(now.getHours()).padStart(2, '0');
+  const minutes = String(now.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
 // Fix za default ikone
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({
@@ -35,14 +46,17 @@ export default function UploadVideoPage() {
   const [locationName, setLocationName] = useState(""); // opciono ime
   const [video, setVideo] = useState(null);
   const [thumbnail, setThumbnail] = useState(null);
+  const [scheduleAt, setScheduleAt] = useState("");
 
   const [msg, setMsg] = useState("");
   const [uploadedVideoId, setUploadedVideoId] = useState(null);
+  const [uploadedScheduleAt, setUploadedScheduleAt] = useState(null);
 
   async function onSubmit(e) {
     e.preventDefault();
     setMsg("");
     setUploadedVideoId(null);
+    setUploadedScheduleAt(null);
 
     // validacija
     if (!video || !thumbnail) {
@@ -50,10 +64,26 @@ export default function UploadVideoPage() {
       return;
     }
 
+    if (scheduleAt) {
+      const scheduled = new Date(scheduleAt);
+      const now = new Date();
+      now.setSeconds(0, 0);
+
+      if (scheduled.getTime() < now.getTime()) {
+        setMsg("Zakazani datum i vreme ne mogu biti u prošlosti.");
+        return;
+      }
+    }
+
     const fd = new FormData();
     fd.append("title", title);
     fd.append("description", description);
     fd.append("tags", tags);
+    if (scheduleAt) {
+      const scheduleDate = new Date(scheduleAt);
+      fd.append("schedule_at", scheduleDate.toISOString());
+      fd.append("schedule_at_epoch_ms", String(scheduleDate.getTime()));
+    }
     
     // Šalji lokaciju kao JSON objekat
     if (locationPosition) {
@@ -93,6 +123,7 @@ export default function UploadVideoPage() {
       // uspeh
       setMsg("✅ Uspešno uploadovan video!");
       setUploadedVideoId(data.id);
+      setUploadedScheduleAt(data.schedule_at || null);
 
       // (opciono) očisti formu
       setTitle("");
@@ -102,6 +133,7 @@ export default function UploadVideoPage() {
       setLocationName("");
       setVideo(null);
       setThumbnail(null);
+      setScheduleAt("");
     } catch (err) {
       setMsg("Greška: ne mogu da pošaljem upload (server down?)");
     }
@@ -129,6 +161,19 @@ export default function UploadVideoPage() {
           value={tags}
           onChange={(e) => setTags(e.target.value)}
         />
+
+        <div>
+          <div>Zakazani prikaz (opciono):</div>
+          <input
+            type="datetime-local"
+            value={scheduleAt}
+            onChange={(e) => setScheduleAt(e.target.value)}
+            min={getNowLocalMinuteString()}
+          />
+          <div style={{ marginTop: 6, fontSize: 12, color: '#666' }}>
+            Ako postaviš vreme, video će biti označen kao <strong>UŽIVO upload</strong> i svi gledaoci će biti u istoj minutaži.
+          </div>
+        </div>
 
         {/* Mapa za odabir lokacije */}
         <div style={{ marginTop: 12 }}>
@@ -231,16 +276,23 @@ export default function UploadVideoPage() {
         {/* dugme se pojavi TEK posle uspeha */}
         {uploadedVideoId && (
           <div style={{ marginTop: 8 }}>
+            {uploadedScheduleAt && new Date(uploadedScheduleAt).getTime() > Date.now() && (
+              <div style={{ marginBottom: 8, color: '#666', fontSize: 14 }}>
+                🔴 UŽIVO upload zakazan za: {new Date(uploadedScheduleAt).toLocaleString('sr-RS')}
+              </div>
+            )}
             <button
               type="button"
               onClick={() => navigate(`/videos/${uploadedVideoId}`)}
+              disabled={Boolean(uploadedScheduleAt && new Date(uploadedScheduleAt).getTime() > Date.now())}
               style={{
                 padding: "10px 16px",
                 background: "#111",
                 color: "white",
                 border: "none",
                 borderRadius: 8,
-                cursor: "pointer",
+                cursor: uploadedScheduleAt && new Date(uploadedScheduleAt).getTime() > Date.now() ? "not-allowed" : "pointer",
+                opacity: uploadedScheduleAt && new Date(uploadedScheduleAt).getTime() > Date.now() ? 0.6 : 1,
                 fontWeight: 600,
               }}
             >
