@@ -31,6 +31,7 @@ function MapTileLoader({ onVideosUpdate }) {
         maxLat: bounds.getNorth().toString(),
         minLng: bounds.getWest().toString(),
         maxLng: bounds.getEast().toString(),
+        zoom: zoomLevel.toString(),
         tileSize: '0.1'
       });
 
