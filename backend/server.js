@@ -1063,15 +1063,24 @@ io.on("connection", (socket) => {
   });
 });
 
-async function startServer() {
-  await ensureTranscodeColumns();
-  startNightlyRebuild();
-  startNightlyThumbnailCompression();
-  
-  server.listen(PORT, () => console.log(`Backend running on ${PORT}`));
-}
+server.listen(PORT, () => console.log(`Backend running on ${PORT}`));
 
-startServer().catch((error) => {
-  console.error("Failed to start backend:", error);
-  process.exit(1);
-});
+(async function initBackground() {
+  try {
+    await ensureTranscodeColumns();
+  } catch (e) {
+    console.error("ensureTranscodeColumns failed (server stays up):", e?.message || e);
+  }
+
+  try {
+    startNightlyRebuild();
+  } catch (e) {
+    console.error("startNightlyRebuild failed:", e?.message || e);
+  }
+
+  try {
+    startNightlyThumbnailCompression();
+  } catch (e) {
+    console.error("startNightlyThumbnailCompression failed:", e?.message || e);
+  }
+})();
