@@ -67,6 +67,41 @@ const activeUsers24hGauge = new client.Gauge({
 const activeVisitorsLastSeenMap = new Map();
 const ACTIVE_USERS_WINDOW_MS = 24 * 60 * 60 * 1000;
 const ACTIVE_USERS_REDIS_KEY = 'metrics:active_visitors_24h';
+const watchPartyRooms = new Map();
+
+function buildWatchPartyState(room) {
+  return {
+    roomId: room.roomId,
+    videoId: room.videoId,
+    owner: room.owner,
+    createdAt: room.createdAt,
+    membersCount: room.members.size,
+    playback: room.playback,
+  };
+}
+
+function createWatchPartyRoom({ videoId, owner }) {
+  let roomId = crypto.randomBytes(4).toString('hex');
+  while (watchPartyRooms.has(roomId)) {
+    roomId = crypto.randomBytes(4).toString('hex');
+  }
+
+  const room = {
+    roomId,
+    videoId,
+    owner,
+    createdAt: new Date().toISOString(),
+    members: new Set(),
+    playback: {
+      isPlaying: false,
+      currentTime: 0,
+      updatedAt: Date.now(),
+    },
+  };
+
+  watchPartyRooms.set(roomId, room);
+  return room;
+}
 
 function cleanupInactiveUsersLocal() {
   const cutoff = Date.now() - ACTIVE_USERS_WINDOW_MS;
@@ -445,6 +480,55 @@ const authMiddleware = (req, res, next) => {
   }
 };
 
+app.post('/api/watch-party/rooms', authMiddleware, async (req, res) => {
+  const videoId = Number(req.body?.videoId);
+  if (!videoId) {
+    return res.status(400).json({ error: 'videoId je obavezan.' });
+  }
+
+  try {
+    const videoRes = await pool.query(
+      'SELECT id, title, is_live FROM videos WHERE id = $1',
+      [videoId]
+    );
+
+    if (videoRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Video ne postoji.' });
+    }
+
+    if (videoRes.rows[0].is_live) {
+      return res.status(400).json({ error: 'Watch Party za LIVE video nije podržan.' });
+    }
+
+    const room = createWatchPartyRoom({
+      videoId,
+      owner: {
+        id: req.user.id,
+        username: req.user.username || 'Host',
+      },
+    });
+
+    return res.status(201).json(buildWatchPartyState(room));
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Greška pri kreiranju Watch Party sobe.' });
+  }
+});
+
+app.get('/api/watch-party/rooms/:roomId', async (req, res) => {
+  const roomId = String(req.params.roomId || '').trim();
+  if (!roomId) {
+    return res.status(400).json({ error: 'roomId je obavezan.' });
+  }
+
+  const room = watchPartyRooms.get(roomId);
+  if (!room) {
+    return res.status(404).json({ error: 'Watch Party soba ne postoji ili je zatvorena.' });
+  }
+
+  return res.json(buildWatchPartyState(room));
+});
+
 function getSynchronizedOffsetSeconds(videoRow) {
   if (!videoRow?.schedule_at) return 0;
 
@@ -733,8 +817,141 @@ const io = new Server(server, {
   }
 });
 
-// ---- CHAT LOGIC (NO HISTORY) ----
+// ---- CHAT + WATCH PARTY LOGIC (NO HISTORY) ----
 io.on("connection", (socket) => {
+  const closeWatchPartyRoom = (roomId) => {
+    const room = watchPartyRooms.get(roomId);
+    if (!room) return;
+
+    io.to(`party:${roomId}`).emit('party:closed', {
+      roomId,
+      message: 'Owner je napustio sobu. Watch Party je zatvoren.',
+    });
+
+    io.in(`party:${roomId}`).socketsLeave(`party:${roomId}`);
+    watchPartyRooms.delete(roomId);
+  };
+
+  const leaveWatchPartyIfAny = () => {
+    const data = socket.data.watchParty;
+    if (!data?.roomId) return;
+
+    const roomId = data.roomId;
+    const room = watchPartyRooms.get(roomId);
+    socket.leave(`party:${roomId}`);
+    delete socket.data.watchParty;
+
+    if (!room) return;
+
+    room.members.delete(socket.id);
+
+    if (room.owner.id === data.user?.id) {
+      closeWatchPartyRoom(roomId);
+      return;
+    }
+
+    io.to(`party:${roomId}`).emit('party:members', {
+      roomId,
+      membersCount: room.members.size,
+    });
+  };
+
+  socket.on('party:join', ({ roomId, token }) => {
+    const normalizedRoomId = String(roomId || '').trim();
+    if (!normalizedRoomId) {
+      socket.emit('party:error', { message: 'Room ID je obavezan.' });
+      return;
+    }
+
+    const room = watchPartyRooms.get(normalizedRoomId);
+    if (!room) {
+      socket.emit('party:error', { message: 'Watch Party soba ne postoji ili je zatvorena.' });
+      return;
+    }
+
+    leaveWatchPartyIfAny();
+
+    let user = { id: null, username: 'Guest' };
+    if (token) {
+      try {
+        const payload = jwt.verify(token, process.env.JWT_SECRET);
+        user = {
+          id: payload.id,
+          username: payload.username || 'Guest',
+        };
+      } catch {
+        user = { id: null, username: 'Guest' };
+      }
+    }
+
+    const isOwner = room.owner.id === user.id;
+    socket.data.watchParty = { roomId: normalizedRoomId, user, isOwner };
+    socket.join(`party:${normalizedRoomId}`);
+    room.members.add(socket.id);
+
+    socket.emit('party:state', {
+      ...buildWatchPartyState(room),
+      isOwner,
+    });
+
+    io.to(`party:${normalizedRoomId}`).emit('party:members', {
+      roomId: normalizedRoomId,
+      membersCount: room.members.size,
+    });
+  });
+
+  socket.on('party:control', ({ roomId, action, currentTime, isPlaying }) => {
+    const data = socket.data.watchParty;
+    const normalizedRoomId = String(roomId || '').trim();
+
+    if (!data?.roomId || data.roomId !== normalizedRoomId) return;
+    if (!data.isOwner) {
+      socket.emit('party:error', { message: 'Samo owner može da kontroliše reprodukciju.' });
+      return;
+    }
+
+    const room = watchPartyRooms.get(normalizedRoomId);
+    if (!room) return;
+
+    const safeTime = Number.isFinite(Number(currentTime)) ? Math.max(0, Number(currentTime)) : room.playback.currentTime;
+
+    if (action === 'play') {
+      room.playback = { isPlaying: true, currentTime: safeTime, updatedAt: Date.now() };
+    } else if (action === 'pause') {
+      room.playback = { isPlaying: false, currentTime: safeTime, updatedAt: Date.now() };
+    } else if (action === 'seek') {
+      const shouldPlay = typeof isPlaying === 'boolean' ? isPlaying : room.playback.isPlaying;
+      room.playback = { isPlaying: shouldPlay, currentTime: safeTime, updatedAt: Date.now() };
+    } else {
+      return;
+    }
+
+    socket.to(`party:${normalizedRoomId}`).emit('party:playback', {
+      roomId: normalizedRoomId,
+      playback: room.playback,
+    });
+  });
+
+  socket.on('party:chat', ({ roomId, text }) => {
+    const data = socket.data.watchParty;
+    const normalizedRoomId = String(roomId || '').trim();
+    if (!data?.roomId || data.roomId !== normalizedRoomId) return;
+
+    const clean = String(text || '').trim();
+    if (!clean || clean.length > 200) return;
+
+    io.to(`party:${normalizedRoomId}`).emit('party:chat', {
+      roomId: normalizedRoomId,
+      text: clean,
+      user: data.user || { id: null, username: 'Guest' },
+      at: new Date().toISOString(),
+    });
+  });
+
+  socket.on('party:leave', () => {
+    leaveWatchPartyIfAny();
+  });
+
   // auto-join u chat na osnovu videa
   socket.on("chat:join", async ({ videoId, token }) => {
     const id = Number(videoId);
@@ -804,6 +1021,10 @@ io.on("connection", (socket) => {
     const id = Number(videoId);
     if (!id) return;
     socket.leave(`live:${id}`);
+  });
+
+  socket.on('disconnect', () => {
+    leaveWatchPartyIfAny();
   });
 });
 
