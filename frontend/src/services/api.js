@@ -122,3 +122,9 @@ export async function startLive(videoId, token) {
   if (!res.ok) throw new Error(data.error || `Ne mogu da startujem live (HTTP ${res.status}).`);
   return data;
 }
+export const getLatestPopularVideos = async () => {
+  const res = await fetch(`${BASE_URL}/videos/popular/latest`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.message || data.error || 'Failed to fetch popular videos');
+  return data;
+};

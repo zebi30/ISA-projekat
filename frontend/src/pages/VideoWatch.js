@@ -25,6 +25,14 @@ export default function VideoWatch() {
   const [isLiked, setIsLiked] = useState(false);
   const [likesCount, setLikesCount] = useState(0);
   const [likeLoading, setLikeLoading] = useState(false);
+  const videoRef = useRef(null);
+  const [scheduleLock, setScheduleLock] = useState(null);
+  const syncStartedAtRef = useRef(null);
+  const liveEdgeInitializedRef = useRef(false);
+  const [liveEdgeSeconds, setLiveEdgeSeconds] = useState(0);
+  const [currentSeconds, setCurrentSeconds] = useState(0);
+  const [liveWindowEnded, setLiveWindowEnded] = useState(false);
+  const [showLiveEndedNotice, setShowLiveEndedNotice] = useState(false);
 
   // Check if user is logged in
   const token = localStorage.getItem('token');
@@ -50,36 +58,128 @@ export default function VideoWatch() {
     }
   }, [id, isLoggedIn, token]);
 
-  // Load video
-  useEffect(() => {
-    (async () => {
-      setLoading(true);
-      try {
-        const res = await fetch(`http://localhost:5000/api/videos/${id}/watch`, { method: "POST" });
-        const data = await res.json().catch(() => ({}));
+  const loadVideo = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`http://localhost:5000/api/videos/${id}/watch`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
 
-        if (!res.ok) {
-          alert(data.message || data.error || "Video nije pronađen");
-          navigate("/");
-          return;
-        }
+      if (res.status === 423) {
+        setVideo(null);
+        setScheduleLock({
+          message: data.message || 'Video je zakazan i još nije dostupan.',
+          schedule_at: data.schedule_at,
+          available_in_seconds: Number(data.available_in_seconds) || 0,
+        });
+        return;
+      }
+       
+      if (!res.ok) {
+        alert(data.message || data.error || "Video nije pronađen");
+        navigate("/");
+        return;
+      }
 
-        setVideo(data);
+      setVideo(data);
 
-        if (data.is_live) {
-          navigate(`/live/${id}`);
-          return;
-        }
+      if (data.is_live) {
+        navigate(`/live/${id}`);
+        return;
+      }
 
         setLikesCount(Number(data.likes) || 0);
       } catch (e) {
         alert("Greška pri učitavanju videa.");
+      if (!res.ok) {
+        alert(data.message || data.error || "Video nije pronađen");
         navigate("/");
-      } finally {
-        setLoading(false);
+        return;
       }
-    })();
+
+      if (data?.schedule_at) {
+        const releaseTime = new Date(data.schedule_at).getTime();
+        const now = Date.now();
+        if (!Number.isNaN(releaseTime) && releaseTime > now) {
+          setVideo(null);
+          setScheduleLock({
+            message: 'Video je zakazan i još nije dostupan.',
+            schedule_at: data.schedule_at,
+            available_in_seconds: Math.ceil((releaseTime - now) / 1000),
+          });
+          return;
+        }
+      }
+
+      setScheduleLock(null);
+      setVideo(data);
+      setLikesCount(Number(data.likes) || 0);
+      setLiveWindowEnded(false);
+    } catch (e) {
+      alert("Greška pri učitavanju videa.");
+      navigate("/");
+    } finally {
+      setLoading(false);
+    }
   }, [id, navigate]);
+
+  // Load video
+  useEffect(() => {
+    loadVideo();
+  }, [loadVideo]);
+
+  useEffect(() => {
+    if (!scheduleLock) return;
+
+    const interval = setInterval(() => {
+      setScheduleLock((prev) => {
+        if (!prev) return prev;
+        const next = Math.max(0, (Number(prev.available_in_seconds) || 0) - 1);
+        if (next === 0) {
+          clearInterval(interval);
+          setTimeout(() => {
+            loadVideo();
+          }, 250);
+        }
+        return { ...prev, available_in_seconds: next };
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [scheduleLock, loadVideo]);
+
+  useEffect(() => {
+    if (!liveWindowEnded) return;
+
+    setShowLiveEndedNotice(true);
+    const timeout = setTimeout(() => {
+      setShowLiveEndedNotice(false);
+    }, 4500);
+
+    return () => clearTimeout(timeout);
+  }, [liveWindowEnded]);
+
+  useEffect(() => {
+    if (!liveWindowEnded || !videoRef.current) return;
+
+    const element = videoRef.current;
+
+    const resetToStart = () => {
+      element.pause();
+      element.currentTime = 0;
+      setCurrentSeconds(0);
+      setLiveEdgeSeconds(0);
+    };
+
+    if (element.readyState >= 1) {
+      resetToStart();
+      return undefined;
+    }
+
+    element.addEventListener('loadedmetadata', resetToStart);
+    return () => {
+      element.removeEventListener('loadedmetadata', resetToStart);
+    };
+  }, [liveWindowEnded, video?.id]);
 
   // Check like status when video loads or login status changes
   useEffect(() => {
@@ -103,8 +203,9 @@ export default function VideoWatch() {
 
   // Load comments
   useEffect(() => {
+    if (scheduleLock) return;
     loadComments(currentPage);
-  }, [id, currentPage]);
+  }, [id, currentPage, scheduleLock]);
 
   const loadComments = async (page) => {
     setCommentsLoading(true);
@@ -212,8 +313,158 @@ export default function VideoWatch() {
     }
   };
 
+  const isSynchronizedStream = Boolean(video?.stream_sync);
+  const isLiveModeActive = isSynchronizedStream && !liveWindowEnded;
+
+  useEffect(() => {
+    if (!isLiveModeActive || !videoRef.current || !video) return;
+
+    const element = videoRef.current;
+    const baseOffset = Math.max(0, Number(video.playback_offset_seconds) || 0);
+    const serverTs = video.server_time ? new Date(video.server_time).getTime() : Date.now();
+    const scheduleTs = video.schedule_at ? new Date(video.schedule_at).getTime() : NaN;
+    syncStartedAtRef.current = Date.now();
+
+    const getExpectedOffset = () => {
+      if (!Number.isFinite(element.duration) || element.duration <= 0) return null;
+
+      const startedAt = syncStartedAtRef.current || Date.now();
+      const elapsedSinceSyncStart = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+      let expected = baseOffset + elapsedSinceSyncStart;
+
+      if (!Number.isFinite(expected) && !Number.isNaN(scheduleTs)) {
+        expected = Math.max(0, Math.floor((Date.now() - scheduleTs) / 1000));
+      }
+
+      if ((!Number.isFinite(expected) || expected < 0) && Number.isFinite(serverTs)) {
+        expected = baseOffset + Math.max(0, Math.floor((Date.now() - serverTs) / 1000));
+      }
+
+      if (!Number.isFinite(expected) || expected < 0) {
+        expected = baseOffset;
+      }
+
+      const durationEdge = Math.max(0, element.duration - 0.3);
+      const normalized = Math.max(0, expected);
+
+      if (normalized >= durationEdge) {
+        setLiveWindowEnded(true);
+        return durationEdge;
+      }
+
+      return Math.min(normalized, durationEdge);
+    };
+
+    const moveToLiveEdgeOnce = () => {
+      const expected = getExpectedOffset();
+      if (expected === null) return;
+      if (!liveEdgeInitializedRef.current) {
+        element.currentTime = expected;
+        liveEdgeInitializedRef.current = true;
+      }
+    };
+
+    const clampForwardSeek = () => {
+      const expected = getExpectedOffset();
+      if (expected === null) return;
+
+      setLiveEdgeSeconds(Math.max(0, Math.floor(expected)));
+      setCurrentSeconds(Math.max(0, Math.floor(element.currentTime || 0)));
+
+      if (element.currentTime > expected) {
+        element.currentTime = expected;
+      }
+    };
+
+    if (element.readyState >= 1) {
+      moveToLiveEdgeOnce();
+    } else {
+      element.addEventListener('loadedmetadata', moveToLiveEdgeOnce);
+    }
+
+    element.addEventListener('canplay', moveToLiveEdgeOnce);
+    element.addEventListener('play', clampForwardSeek);
+    element.addEventListener('seeking', clampForwardSeek);
+    element.addEventListener('seeked', clampForwardSeek);
+    element.addEventListener('timeupdate', clampForwardSeek);
+
+    const interval = setInterval(clampForwardSeek, 250);
+    const t1 = setTimeout(moveToLiveEdgeOnce, 100);
+    const t2 = setTimeout(moveToLiveEdgeOnce, 350);
+    const t3 = setTimeout(moveToLiveEdgeOnce, 700);
+
+    return () => {
+      element.removeEventListener('loadedmetadata', moveToLiveEdgeOnce);
+      element.removeEventListener('canplay', moveToLiveEdgeOnce);
+      element.removeEventListener('play', clampForwardSeek);
+      element.removeEventListener('seeking', clampForwardSeek);
+      element.removeEventListener('seeked', clampForwardSeek);
+      element.removeEventListener('timeupdate', clampForwardSeek);
+      clearInterval(interval);
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
+      liveEdgeInitializedRef.current = false;
+      setLiveEdgeSeconds(0);
+      setCurrentSeconds(0);
+    };
+  }, [video, isLiveModeActive]);
+
+  function formatClock(seconds) {
+    const total = Math.max(0, Number(seconds) || 0);
+    const mins = Math.floor(total / 60);
+    const secs = total % 60;
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  }
+
+  function formatRemaining(seconds) {
+    const total = Math.max(0, Number(seconds) || 0);
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const secs = total % 60;
+
+    if (hours > 0) {
+      return `${hours}h ${String(minutes).padStart(2, '0')}m ${String(secs).padStart(2, '0')}s`;
+    }
+    return `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  }
 
   if (loading) return <div style={{ padding: 20 }}>Loading...</div>;
+  if (scheduleLock) {
+    return (
+      <div style={{ maxWidth: 720, margin: "48px auto", padding: 24 }}>
+        <div style={{
+          border: '1px solid #ddd',
+          borderRadius: 12,
+          padding: 24,
+          background: '#fafafa'
+        }}>
+          <h2 style={{ marginTop: 0 }}>⏰ Video još nije dostupan</h2>
+          <p style={{ color: '#555' }}>{scheduleLock.message}</p>
+          <p style={{ marginBottom: 8 }}>
+            Dostupan od: <strong>{scheduleLock.schedule_at ? new Date(scheduleLock.schedule_at).toLocaleString('sr-RS') : '-'}</strong>
+          </p>
+          <p style={{ marginTop: 0 }}>
+            Preostalo: <strong>{formatRemaining(scheduleLock.available_in_seconds)}</strong>
+          </p>
+          <button
+            onClick={() => navigate('/')}
+            style={{
+              marginTop: 10,
+              padding: '10px 14px',
+              borderRadius: 10,
+              border: '1px solid #ddd',
+              cursor: 'pointer',
+              background: 'white',
+              fontWeight: 600
+            }}
+          >
+            ← Nazad
+          </button>
+        </div>
+      </div>
+    );
+  }
   if (!video) return null;
 
   const base = "http://localhost:5000";
@@ -225,8 +476,32 @@ export default function VideoWatch() {
     <div style={{ maxWidth: 980, margin: "0 auto", padding: 20 }}>
       {/* Video Player */}
       <div style={{ background: "#000", borderRadius: 12, overflow: "hidden" }}>
-        <video src={videoUrl} controls style={{ width: "100%", maxHeight: 520 }} />
+        <video
+          key={`${video.id}-${isLiveModeActive ? 'live' : 'normal'}`}
+          ref={videoRef}
+          src={videoUrl}
+          controls
+          style={{ width: "100%", maxHeight: 520 }}
+        />
       </div>
+
+      {isLiveModeActive && (
+        <div style={{ marginTop: 8, color: '#666', fontSize: 13 }}>
+          🔴 UŽIVO upload • sinhronizovani prikaz • start: {video.schedule_at ? new Date(video.schedule_at).toLocaleString('sr-RS') : '-'}
+          <div style={{ marginTop: 4 }}>
+            Možeš vraćati unazad, ali ne možeš premotati unapred preko trenutnog živog trenutka.
+          </div>
+          <div style={{ marginTop: 6, fontWeight: 600, color: '#b71c1c' }}>
+            LIVE edge: {formatClock(liveEdgeSeconds)} • Trenutno: {formatClock(currentSeconds)}
+          </div>
+        </div>
+      )}
+
+      {showLiveEndedNotice && (
+        <div style={{ marginTop: 8, fontSize: 13, color: '#2e7d32', fontWeight: 600 }}>
+          ✅ UŽIVO prenos završen — video sada radi kao običan upload.
+        </div>
+      )}
 
       {/* Video Info */}
       <h2 style={{ marginTop: 16 }}>{video.title}</h2>

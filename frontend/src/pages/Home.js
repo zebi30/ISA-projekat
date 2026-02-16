@@ -1,24 +1,31 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getPublicVideos } from '../services/api';
+import { getPublicVideos, getLatestPopularVideos } from '../services/api';
 
 export default function Home() {
   const [videos, setVideos] = useState([]);
+  const [popularVideos, setPopularVideos] = useState([]);
+  const [popularRunAt, setPopularRunAt] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const navigate = useNavigate();
-  const [period, setPeriod] = useState('all'); // all | 30d | year
   
   const token = localStorage.getItem('token');
   const isLoggedIn = !!token;
 
   useEffect(() => {
     fetchVideos();
-  }, [period]);
+    if (token) {
+      fetchPopularVideos();
+    } else {
+      setPopularVideos([]);
+      setPopularRunAt(null);
+    }
+  }, [token]);
 
   const fetchVideos = async () => {
     try {
-      const data = await getPublicVideos(period);
+      const data = await getPublicVideos();
       setVideos(data);
     } catch (err) {
       setError(err.message);
@@ -27,17 +34,52 @@ export default function Home() {
     }
   };
 
+  const fetchPopularVideos = async () => {
+    try {
+      const data = await getLatestPopularVideos();
+      setPopularVideos(data.videos || []);
+      setPopularRunAt(data.run_at || null);
+    } catch (_) {
+      setPopularVideos([]);
+      setPopularRunAt(null);
+    }
+  };
+
   const handleLogout = () => {
     localStorage.removeItem('token');
     window.location.reload();
   };
 
-  const handleWatchClick = (video) => {
+  const handleWatchClick1 = (video) => {
     if (video.is_live) {
       navigate(`/live/${video.id}`);
     } else {
       navigate(`/videos/${video.id}`);
     }
+  };
+  const handleWatchClick = async (video) => {
+    if (video?.schedule_at) {
+      const releaseTime = new Date(video.schedule_at).getTime();
+      const now = Date.now();
+      if (!Number.isNaN(releaseTime) && releaseTime > now) {
+        alert(`Video još nije dostupan. Dostupan je od ${new Date(video.schedule_at).toLocaleString('sr-RS')}.`);
+        return;
+      }
+    }
+
+    try {
+      const res = await fetch(`http://localhost:5000/api/videos/${video.id}`);
+      const data = await res.json().catch(() => ({}));
+
+      if (res.status === 423) {
+        alert(`Video još nije dostupan. Dostupan je od ${data.schedule_at ? new Date(data.schedule_at).toLocaleString('sr-RS') : 'zakazanog termina'}.`);
+        return;
+      }
+    } catch (_) {
+      // fallback: ako precheck ne uspe, pusti postojeće ponašanje
+    }
+
+    navigate(`/videos/${video.id}`);
   };
 
   if (loading) {
@@ -209,6 +251,81 @@ export default function Home() {
           </div>
         )}
 
+        {isLoggedIn && (
+          <div style={{
+            padding: '20px',
+            background: 'white',
+            borderRadius: '12px',
+            marginBottom: '24px',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.08)'
+          }}>
+            <h2 style={{ margin: '0 0 6px 0', fontSize: '22px', color: '#333' }}>
+              🔥 Top 3 popularna videa
+            </h2>
+            <p style={{ margin: '0 0 14px 0', color: '#666', fontSize: '13px' }}>
+              {popularRunAt
+                ? `Poslednji ETL: ${new Date(popularRunAt).toLocaleString('sr-RS')}`
+                : 'Podaci iz poslednjeg ETL izvršavanja'}
+            </p>
+
+            {popularVideos.length === 0 ? (
+              <div style={{
+                border: '1px dashed #d0d0d0',
+                borderRadius: '10px',
+                padding: '14px',
+                background: '#fcfcfc',
+                color: '#666',
+                fontSize: '14px'
+              }}>
+                Nema ETL podataka za prikaz. Pokreni nekoliko pregleda videa i zatim `npm run etl:popular:run`.
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gap: '10px' }}>
+                {popularVideos.slice(0, 3).map((video) => (
+                  <button
+                    key={`popular-${video.id}`}
+                    onClick={() => handleWatchClick(video)}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      width: '100%',
+                      border: '1px solid #eee',
+                      borderRadius: '10px',
+                      background: '#fafafa',
+                      padding: '12px 14px',
+                      cursor: 'pointer',
+                      textAlign: 'left'
+                    }}
+                  >
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: '14px', color: '#1976d2', fontWeight: 700 }}>
+                        #{video.rank}
+                      </div>
+                      <div style={{
+                        fontSize: '15px',
+                        color: '#222',
+                        fontWeight: 600,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap'
+                      }}>
+                        {video.title}
+                      </div>
+                      <div style={{ fontSize: '12px', color: '#666' }}>
+                        {video.first_name} {video.last_name} • @{video.username}
+                      </div>
+                    </div>
+                    <div style={{ fontSize: '13px', color: '#444', fontWeight: 700 }}>
+                      Score: {video.popularity_score}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         <h2 style={{ 
           marginBottom: '24px', 
           fontSize: '24px', 
@@ -218,31 +335,6 @@ export default function Home() {
           Najnoviji videi
         </h2>
         
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 16 }}>
-          <span style={{ fontSize: 14, color: '#555', fontWeight: 600 }}>Period:</span>
-
-          <select
-            value={period}
-            onChange={(e) => {
-              setLoading(true);
-              setPeriod(e.target.value);
-            }}
-            style={{
-              padding: '8px 10px',
-              borderRadius: 8,
-              border: '1px solid #ddd',
-              background: 'white',
-              cursor: 'pointer',
-              fontWeight: 600
-            }}
-          >
-            <option value="all">Sve vreme</option>
-            <option value="30d">Poslednjih 30 dana</option>
-            <option value="year">Tekuća godina</option>
-          </select>
-        </div>
-
-
         {videos.length === 0 ? (
           <div style={{ 
             textAlign: 'center', 
@@ -262,7 +354,7 @@ export default function Home() {
             {videos.map((video) => (
               <div 
                 key={video.id} 
-                onClick={() => handleWatchClick(video)}
+                onClick={() => handleWatchClick1(video)}
                 style={{ 
                   background: 'white', 
                   borderRadius: '12px',
@@ -354,6 +446,21 @@ export default function Home() {
                   }}>
                     {video.title}
                   </h3>
+
+                  {video.schedule_at && (
+                    <div style={{
+                      marginBottom: '8px',
+                      display: 'inline-block',
+                      background: '#ffe9ea',
+                      color: '#b71c1c',
+                      padding: '4px 8px',
+                      borderRadius: '999px',
+                      fontSize: '11px',
+                      fontWeight: 700
+                    }}>
+                      🔴 UŽIVO upload
+                    </div>
+                  )}
                   
                   <p style={{ 
                     margin: '8px 0', 
