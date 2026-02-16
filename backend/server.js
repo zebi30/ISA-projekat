@@ -15,6 +15,7 @@ const { ensurePopularVideosTables } = require('./services/popularVideosSchema');
 const { recordVideoViewEvent, getLatestPopularVideos } = require('./services/popularVideosEtlService');
 const { startDailyPopularVideosEtlJob } = require('./jobs/popularVideosEtl');
 const { getRedis } = require('./services/redisClient');
+const tileService = require('./services/tileService');
 const client = require('prom-client');
 
 const videosRoutes = require("./routes/videos");
@@ -681,10 +682,126 @@ app.get('/api/videos/:id/like/check', authMiddleware, async (req, res) => {
 app.delete('/api/videos/:id/like', authMiddleware, async (req, res) => { /* ... */ });
 
 // GET /api/videos/map - MORA BITI PRE /:id rute!
-function getTileKey(lat, lng, tileSize = 0.1) { /* ... */ }
-app.get('/api/videos/map/count', async (req, res) => { /* ... */ });
-app.get('/api/videos/map/bounds', async (req, res) => { /* ... */ });
-app.get('/api/videos/map', async (req, res) => { /* ... */ });
+function getTileKey(lat, lng, tileSize = 0.1) {
+  const tileX = Math.floor(lng / tileSize);
+  const tileY = Math.floor(lat / tileSize);
+  return `tile_${tileX}_${tileY}`;
+}
+
+function getMapTimeframeFilter(timeframe = 'all') {
+  if (timeframe === '30d') return `AND v.created_at >= NOW() - INTERVAL '30 days'`;
+  if (timeframe === 'year') return `AND v.created_at >= date_trunc('year', NOW())`;
+  return '';
+}
+
+app.get('/api/videos/map/count', async (req, res) => {
+  const timeframe = String(req.query.timeframe || 'all');
+  const timeframeFilter = getMapTimeframeFilter(timeframe);
+
+  try {
+    const result = await pool.query(
+      `
+      SELECT COUNT(*)::int AS count
+      FROM videos v
+      WHERE v.location IS NOT NULL
+        AND (v.schedule_at IS NULL OR v.schedule_at <= NOW())
+        ${timeframeFilter}
+      `
+    );
+
+    return res.json({ count: result.rows[0]?.count || 0, timeframe });
+  } catch (err) {
+    console.error('Map count error:', err);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+app.get('/api/videos/map/bounds', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        MIN((v.location->>'latitude')::float) AS min_lat,
+        MAX((v.location->>'latitude')::float) AS max_lat,
+        MIN((v.location->>'longitude')::float) AS min_lng,
+        MAX((v.location->>'longitude')::float) AS max_lng
+      FROM videos v
+      WHERE v.location IS NOT NULL
+        AND (v.schedule_at IS NULL OR v.schedule_at <= NOW())
+    `);
+
+    const row = result.rows[0] || {};
+    return res.json({
+      minLat: row.min_lat !== null ? Number(row.min_lat) : null,
+      maxLat: row.max_lat !== null ? Number(row.max_lat) : null,
+      minLng: row.min_lng !== null ? Number(row.min_lng) : null,
+      maxLng: row.max_lng !== null ? Number(row.max_lng) : null,
+    });
+  } catch (err) {
+    console.error('Map bounds error:', err);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+app.get('/api/videos/map', async (req, res) => {
+  const minLat = Number(req.query.minLat);
+  const maxLat = Number(req.query.maxLat);
+  const minLng = Number(req.query.minLng);
+  const maxLng = Number(req.query.maxLng);
+  const zoomLevel = Number.isFinite(Number(req.query.zoom)) ? Number(req.query.zoom) : 3;
+  const timeframe = String(req.query.timeframe || 'all');
+  const timeframeFilter = getMapTimeframeFilter(timeframe);
+
+  if ([minLat, maxLat, minLng, maxLng].some((value) => Number.isNaN(value))) {
+    return res.status(400).json({ message: 'Invalid map bounds' });
+  }
+
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        v.id,
+        v.title,
+        v.description,
+        v.location,
+        v.views,
+        v.likes,
+        v.created_at,
+        u.first_name,
+        u.last_name
+      FROM videos v
+      LEFT JOIN users u ON v.user_id = u.id
+      WHERE v.location IS NOT NULL
+        AND (v.location->>'latitude')::float BETWEEN $1 AND $2
+        AND (v.location->>'longitude')::float BETWEEN $3 AND $4
+        AND (v.schedule_at IS NULL OR v.schedule_at <= NOW())
+        ${timeframeFilter}
+      ORDER BY v.created_at DESC
+      `,
+      [minLat, maxLat, minLng, maxLng]
+    );
+
+    const totalCount = result.rows.length;
+
+    const tileResult = tileService.getVideosForViewport(
+      result.rows,
+      { minLat, maxLat, minLng, maxLng },
+      zoomLevel
+    );
+
+    return res.json({
+      videos: tileResult.videos,
+      count: tileResult.count,
+      totalCount,
+      tiles: tileResult.config.visibleTiles,
+      zoom: zoomLevel,
+      timeframe,
+      config: tileResult.config,
+    });
+  } catch (err) {
+    console.error('Map videos error:', err);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
 
 // Get a singular video via id (public) ✅ (OSTAJE JEDNA VERZIJA)
 app.get("/api/videos/:id", blockScheduledVideoAccess, async (req, res) => {

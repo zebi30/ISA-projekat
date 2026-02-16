@@ -2,6 +2,29 @@
 
 Ovaj folder sadrži kompletan monitoring setup za backend aplikaciju.
 
+## Docker režimi (dev vs cluster)
+
+Kada pokrećeš monitoring kroz `docker-compose`, Prometheus može da radi u dva režima:
+
+- `cluster` (podrazumevano): čita metrike sa `api1:5000` i `api2:5000`
+- `dev`: čita metrike samo sa `host.docker.internal:5000`
+
+Režim biraš jednom promenljivom:
+
+```powershell
+$env:PROMETHEUS_CONFIG_FILE="prometheus.dev.yml"
+docker compose up -d prometheus grafana
+```
+
+Za klaster režim:
+
+```powershell
+$env:PROMETHEUS_CONFIG_FILE="prometheus.cluster.yml"
+docker compose up -d prometheus grafana
+```
+
+Ako promenljiva nije postavljena, koristi se `prometheus.cluster.yml`.
+
 ## Šta se prati
 
 - DB konekcije iz `pg` pool-a:
