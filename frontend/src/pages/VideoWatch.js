@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { getVideoComments, postComment, likeVideo, unlikeVideo } from "../services/api";
 import { startLive } from "../services/api";
+import { createWatchPartyRoom } from "../services/api";
 
 export default function VideoWatch() {
   const { id } = useParams();
@@ -33,6 +34,7 @@ export default function VideoWatch() {
   const [currentSeconds, setCurrentSeconds] = useState(0);
   const [liveWindowEnded, setLiveWindowEnded] = useState(false);
   const [showLiveEndedNotice, setShowLiveEndedNotice] = useState(false);
+  const [creatingParty, setCreatingParty] = useState(false);
 
   // Check if user is logged in
   const token = localStorage.getItem('token');
@@ -289,6 +291,24 @@ export default function VideoWatch() {
       navigate(`/live/${id}`);
     } catch (e) {
       alert(e.message);
+    }
+  };
+
+  const handleCreateWatchParty = async () => {
+    if (!isLoggedIn) {
+      alert('Morate se prijaviti kako biste kreirali Watch Party.');
+      navigate('/login');
+      return;
+    }
+
+    setCreatingParty(true);
+    try {
+      const room = await createWatchPartyRoom(id, token);
+      navigate(`/party/${room.roomId}`);
+    } catch (e) {
+      alert(e.message || 'Ne mogu da kreiram Watch Party sobu.');
+    } finally {
+      setCreatingParty(false);
     }
   };
 
@@ -557,6 +577,24 @@ export default function VideoWatch() {
             🔴 Start LIVE
           </button>
         )}
+
+          {!video?.is_live && isLoggedIn && (
+            <button
+              onClick={handleCreateWatchParty}
+              disabled={creatingParty}
+              style={{
+                padding: "10px 20px",
+                borderRadius: 10,
+                border: "none",
+                background: creatingParty ? "#9e9e9e" : "#6a1b9a",
+                color: "white",
+                fontWeight: 700,
+                cursor: creatingParty ? "not-allowed" : "pointer"
+              }}
+            >
+              {creatingParty ? 'Kreiram...' : 'Start Watch Party'}
+            </button>
+          )}
 
         </div>
 
