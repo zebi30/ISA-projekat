@@ -9,7 +9,8 @@
     "worker:transcode:1": "set TRANSCODE_WORKER_NAME=consumer-1&& node workers/transcodeWorker.js",
     "worker:transcode:2": "set TRANSCODE_WORKER_NAME=consumer-2&& node workers/transcodeWorker.js",
     "transcode:requeue-pending": "node scripts/requeuePendingTranscodes.js",
-    "thumbs:compress:run": "node scripts/runThumbnailCompressionNow.js"
+    "thumbs:compress:run": "node scripts/runThumbnailCompressionNow.js",
+    "etl:popular:run": "node scripts/runPopularVideosEtlNow.js"
   },
   "keywords": [],
   "author": "",

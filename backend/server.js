@@ -11,6 +11,9 @@ const path = require("path");
 const commentCache = require('./services/commentCache');
 const rateLimiter = require('./middlewares/rateLimiter');
 const { ensureVideoScheduleColumns } = require('./services/videoScheduleSchema');
+const { ensurePopularVideosTables } = require('./services/popularVideosSchema');
+const { recordVideoViewEvent, getLatestPopularVideos } = require('./services/popularVideosEtlService');
+const { startDailyPopularVideosEtlJob } = require('./jobs/popularVideosEtl');
 const client = require('prom-client');
 
 const videosRoutes = require("./routes/videos");
@@ -435,6 +438,16 @@ app.get('/api/videos', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Greska pri ucitavanju videa.'});
+  }
+});
+
+app.get('/api/videos/popular/latest', async (req, res) => {
+  try {
+    const latest = await getLatestPopularVideos();
+    return res.json(latest);
+  } catch (error) {
+    console.error('Error fetching popular videos snapshot:', error);
+    return res.status(500).json({ message: 'Server error' });
   }
 });
 
@@ -948,6 +961,7 @@ app.post("/api/videos/:id/watch", blockScheduledVideoAccess, async (req, res) =>
       [id]
     );
     row.views = updatedViews.rows[0]?.views ?? row.views;
+    await recordVideoViewEvent(id);
 
     const playbackOffsetSeconds = getSynchronizedOffsetSeconds(row);
 
@@ -1068,6 +1082,7 @@ app.post("/api/videos/:id/watch", blockScheduledVideoAccess, async (req, res) =>
       [id]
     );
     row.views = updatedViews.rows[0]?.views ?? row.views;
+    await recordVideoViewEvent(id);
 
     const playbackOffsetSeconds = getSynchronizedOffsetSeconds(row);
 
@@ -1094,11 +1109,15 @@ app.use((err, req, res, next) => {
   });
 });
 
-ensureVideoScheduleColumns()
+Promise.all([
+  ensureVideoScheduleColumns(),
+  ensurePopularVideosTables(),
+])
   .then(() => {
+    startDailyPopularVideosEtlJob();
     app.listen(PORT, () => console.log(`Backend running on ${PORT}`));
   })
   .catch((error) => {
-    console.error('Neuspesna inicijalizacija video schedule kolona:', error);
+    console.error('Neuspesna inicijalizacija server shema:', error);
     process.exit(1);
   });

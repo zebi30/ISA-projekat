@@ -10,6 +10,7 @@ const requestTimeout = require("../middlewares/requestTimeout");
 const auth = require("../middlewares/auth"); 
 const mapTileCache = require("../services/mapTileCache");
 const { enqueueTranscodeJob } = require("../services/transcodeQueue");
+const { recordVideoViewEvent } = require("../services/popularVideosEtlService");
 
 const router = express.Router();
 
@@ -394,6 +395,7 @@ router.post("/:id/watch", blockScheduledVideoAccess, async (req, res) => {
       [videoId]
     );
     row.views = upd.rows[0]?.views ?? row.views;
+    await recordVideoViewEvent(videoId);
 
     res.json({
       ...row,

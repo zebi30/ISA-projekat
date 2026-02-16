@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getPublicVideos } from '../services/api';
+import { getPublicVideos, getLatestPopularVideos } from '../services/api';
 
 export default function Home() {
   const [videos, setVideos] = useState([]);
+  const [popularVideos, setPopularVideos] = useState([]);
+  const [popularRunAt, setPopularRunAt] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const navigate = useNavigate();
@@ -13,7 +15,13 @@ export default function Home() {
 
   useEffect(() => {
     fetchVideos();
-  }, []);
+    if (token) {
+      fetchPopularVideos();
+    } else {
+      setPopularVideos([]);
+      setPopularRunAt(null);
+    }
+  }, [token]);
 
   const fetchVideos = async () => {
     try {
@@ -23,6 +31,17 @@ export default function Home() {
       setError(err.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchPopularVideos = async () => {
+    try {
+      const data = await getLatestPopularVideos();
+      setPopularVideos(data.videos || []);
+      setPopularRunAt(data.run_at || null);
+    } catch (_) {
+      setPopularVideos([]);
+      setPopularRunAt(null);
     }
   };
 
@@ -222,6 +241,81 @@ export default function Home() {
             <p style={{ margin: 0, color: '#1565c0', fontSize: '15px' }}>
               💡 Prijavite se kako biste mogli da komentarišete i lajkujete videe!
             </p>
+          </div>
+        )}
+
+        {isLoggedIn && (
+          <div style={{
+            padding: '20px',
+            background: 'white',
+            borderRadius: '12px',
+            marginBottom: '24px',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.08)'
+          }}>
+            <h2 style={{ margin: '0 0 6px 0', fontSize: '22px', color: '#333' }}>
+              🔥 Top 3 popularna videa
+            </h2>
+            <p style={{ margin: '0 0 14px 0', color: '#666', fontSize: '13px' }}>
+              {popularRunAt
+                ? `Poslednji ETL: ${new Date(popularRunAt).toLocaleString('sr-RS')}`
+                : 'Podaci iz poslednjeg ETL izvršavanja'}
+            </p>
+
+            {popularVideos.length === 0 ? (
+              <div style={{
+                border: '1px dashed #d0d0d0',
+                borderRadius: '10px',
+                padding: '14px',
+                background: '#fcfcfc',
+                color: '#666',
+                fontSize: '14px'
+              }}>
+                Nema ETL podataka za prikaz. Pokreni nekoliko pregleda videa i zatim `npm run etl:popular:run`.
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gap: '10px' }}>
+                {popularVideos.slice(0, 3).map((video) => (
+                  <button
+                    key={`popular-${video.id}`}
+                    onClick={() => handleWatchClick(video)}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      width: '100%',
+                      border: '1px solid #eee',
+                      borderRadius: '10px',
+                      background: '#fafafa',
+                      padding: '12px 14px',
+                      cursor: 'pointer',
+                      textAlign: 'left'
+                    }}
+                  >
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: '14px', color: '#1976d2', fontWeight: 700 }}>
+                        #{video.rank}
+                      </div>
+                      <div style={{
+                        fontSize: '15px',
+                        color: '#222',
+                        fontWeight: 600,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap'
+                      }}>
+                        {video.title}
+                      </div>
+                      <div style={{ fontSize: '12px', color: '#666' }}>
+                        {video.first_name} {video.last_name} • @{video.username}
+                      </div>
+                    </div>
+                    <div style={{ fontSize: '13px', color: '#444', fontWeight: 700 }}>
+                      Score: {video.popularity_score}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
