@@ -2,10 +2,15 @@ const redis = require('redis');
 
 class CommentCache {
   constructor() {
+    const redisHost = process.env.REDIS_HOST || 'localhost';
+    const redisPort = Number(process.env.REDIS_PORT || 6379);
+
     // Create Redis client
     this.client = redis.createClient({
-      host: 'localhost',
-      port: 6379
+      socket: {
+        host: redisHost,
+        port: redisPort,
+      },
     });
 
     this.client.on('error', (err) => {
