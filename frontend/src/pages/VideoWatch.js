@@ -3,6 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { getVideoComments, postComment, likeVideo, unlikeVideo } from "../services/api";
 import { startLive } from "../services/api";
 import { createWatchPartyRoom } from "../services/api";
+import { io } from "socket.io-client";
 
 export default function VideoWatch() {
   const { id } = useParams();
@@ -26,6 +27,11 @@ export default function VideoWatch() {
   const [isLiked, setIsLiked] = useState(false);
   const [likesCount, setLikesCount] = useState(0);
   const [likeLoading, setLikeLoading] = useState(false);
+  
+  const socketRef = useRef(null);
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatText, setChatText] = useState("");
+
   const videoRef = useRef(null);
   const [scheduleLock, setScheduleLock] = useState(null);
   const syncStartedAtRef = useRef(null);
@@ -316,6 +322,42 @@ export default function VideoWatch() {
   const isLiveModeActive = isSynchronizedStream && !liveWindowEnded;
 
   useEffect(() => {
+    if (!isLiveModeActive) return;
+
+    const token = localStorage.getItem("token");
+    if (!token) return; // ako nije ulogovan, neće chat
+
+    const socket = io("http://localhost:5000", { transports: ["websocket"] });
+    socketRef.current = socket;
+
+    socket.emit("chat:join", { videoId: id, token });
+
+    socket.on("chat:message", (msg) => {
+      if (Number(msg.videoId) !== Number(id)) return;
+      setChatMessages((prev) => [...prev, msg]);
+    });
+
+    socket.on("chat:error", (p) => {
+      console.log("chat  error:", p?.message);
+    });
+
+    return () => {
+      try { socket.disconnect(); } catch {}
+      socketRef.current = null;
+    };
+  }, [id, isLiveModeActive]);
+
+  const sendChatMessage = (e) => {
+    e.preventDefault();
+    const clean = chatText.trim();
+    if (!clean) return;
+
+    socketRef.current?.emit("chat:message", { videoId: id, text: clean });
+    setChatText("");
+  };
+
+
+  useEffect(() => {
     if (!isLiveModeActive || !videoRef.current || !video) return;
 
     const element = videoRef.current;
@@ -602,6 +644,56 @@ export default function VideoWatch() {
           👁 {video.views ?? 0} pregleda
         </div>
       </div>
+      
+      {/*Live chat*/}
+      {isLiveModeActive && isLoggedIn && (
+        <div style={{ marginTop: 18, border: "1px solid #e0e0e0", borderRadius: 12, padding: 12 }}>
+          <h3 style={{ marginTop: 0 }}>LIVE chat</h3>
+
+          <div style={{
+            height: 260, overflowY: "auto", background: "#fafafa",
+            border: "1px solid #eee", borderRadius: 10, padding: 10
+          }}>
+            {chatMessages.length === 0 ? (
+              <div style={{ color: "#999" }}>Nema poruka još.</div>
+            ) : (
+              chatMessages.map((m, idx) => (
+                <div key={m.at + idx} style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 12, color: "#666" }}>
+                    <b>@{m.user?.username}</b> • {new Date(m.at).toLocaleTimeString("sr-RS")}
+                  </div>
+                  <div style={{ fontSize: 14 }}>{m.text}</div>
+                </div>
+              ))
+            )}
+          </div>
+
+          <form onSubmit={sendChatMessage} style={{ display: "flex", gap: 10, marginTop: 12 }}>
+            <input
+              value={chatText}
+              onChange={(e) => setChatText(e.target.value)}
+              placeholder="Napiši poruku..."
+              maxLength={200}
+              style={{ flex: 1, padding: "10px 12px", borderRadius: 10, border: "1px solid #ddd" }}
+            />
+            <button
+              type="submit"
+              disabled={!chatText.trim()}
+              style={{
+                padding: "10px 14px",
+                borderRadius: 10,
+                border: "none",
+                background: !chatText.trim() ? "#ccc" : "#1976d2",
+                color: "white",
+                fontWeight: 700,
+                cursor: !chatText.trim() ? "not-allowed" : "pointer",
+              }}
+            >
+              Pošalji
+            </button>
+          </form>
+        </div>
+      )}
 
       {/* Comments Section */}
       <div style={{ marginTop: 40, borderTop: '2px solid #e0e0e0', paddingTop: 20 }}>
