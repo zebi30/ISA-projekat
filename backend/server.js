@@ -1076,7 +1076,7 @@ io.on("connection", (socket) => {
 
     // 1) PROVERI DA LI JE VIDEO LIVE/STREAMING
     try {
-      const r = await pool.query("SELECT schedule_at FROM videos WHERE id=$1", [id]);
+      const r = await pool.query("SELECT schedule_at, is_live FROM videos WHERE id=$1", [id]);
       if (r.rows.length === 0) {
         socket.emit("chat:error", { message: "Video ne postoji." });
         return;
@@ -1119,7 +1119,7 @@ io.on("connection", (socket) => {
     
     // 3) JOIN LIVE ROOM (razmena poruka samo između gledalaca tog videa)
     socket.join(`video:${id}`);
-    console.log("✅ joined room:", `video:${id}`, "user:", socket.data.user);
+    //console.log("✅ joined room:", `video:${id}`, "user:", socket.data.user);
 
   });
 

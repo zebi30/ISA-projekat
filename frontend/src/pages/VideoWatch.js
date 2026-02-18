@@ -604,23 +604,6 @@ export default function VideoWatch() {
           </button>
 
           {!video?.is_live && isLoggedIn && (
-          <button
-            onClick={handleStartLive}
-            style={{
-              padding: "10px 20px",
-              borderRadius: 10,
-              border: "none",
-              background: "#e53935",
-              color: "white",
-              fontWeight: 800,
-              cursor: "pointer"
-            }}
-          >
-            🔴 Start LIVE
-          </button>
-        )}
-
-          {!video?.is_live && isLoggedIn && (
             <button
               onClick={handleCreateWatchParty}
               disabled={creatingParty}
