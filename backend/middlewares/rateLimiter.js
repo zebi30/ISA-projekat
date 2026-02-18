@@ -55,6 +55,7 @@ class RedisRateLimiter {
     const key = `rate_limit:${identifier}`;
     const now = Date.now();
     const windowStart = now - windowMs;
+    const requestMember = `${now}-${Math.random().toString(36).slice(2, 10)}`;
 
     try {
       // Start a transaction (pipeline)
@@ -67,7 +68,7 @@ class RedisRateLimiter {
       multi.zCard(key);
 
       // Add current request with timestamp as score
-      multi.zAdd(key, { score: now, value: `${now}` });
+      multi.zAdd(key, { score: now, value: requestMember });
 
       // Set expiration on the key
       multi.expire(key, Math.ceil(windowMs / 1000));

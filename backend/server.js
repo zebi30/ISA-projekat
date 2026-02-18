@@ -10,6 +10,7 @@ const os = require('os');
 const path = require("path");
 const commentCache = require('./services/commentCache');
 const rateLimiter = require('./middlewares/rateLimiter');
+const { ensureTranscodeColumns } = require('./services/transcodeSchema');
 const { ensureVideoScheduleColumns } = require('./services/videoScheduleSchema');
 const { ensurePopularVideosTables } = require('./services/popularVideosSchema');
 const { recordVideoViewEvent, getLatestPopularVideos } = require('./services/popularVideosEtlService');
@@ -266,6 +267,20 @@ const loginLimiter = rateLimiter.createLimiter({
   handler: (req, res) => {
     res.status(429).json({
       error: 'Previše pokušaja prijave. Pokušajte ponovo za minut.'
+    });
+  }
+});
+
+const commentLimiter = rateLimiter.createLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 60,
+  keyGenerator: (req) => {
+    const userId = req.user?.id;
+    return userId ? `comment:user:${userId}` : `comment:ip:${req.ip}`;
+  },
+  handler: (req, res) => {
+    res.status(429).json({
+      error: 'Previše komentara. Dozvoljeno je najviše 60 komentara po satu.'
     });
   }
 });
@@ -653,9 +668,123 @@ app.get('/api/users/:id/profile', async (req, res) => {
   }
 });
 
-app.get('/api/videos/:id/comments', async (req, res) => { /* ... */ });
-app.post('/api/videos/:id/comment', authMiddleware, async (req, res) => { /* ... */ });
-app.get('/api/cache/stats', async (req, res) => { /* ... */ });
+app.get('/api/videos/:id/comments', async (req, res) => {
+  const videoId = Number(req.params.id);
+  if (!videoId) {
+    return res.status(400).json({ error: 'Neispravan video ID.' });
+  }
+
+  const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+  const requestedLimit = Number.parseInt(req.query.limit, 10) || 6;
+  const limit = Math.min(60, Math.max(1, requestedLimit));
+  const offset = (page - 1) * limit;
+
+  try {
+    const cached = await commentCache.get(videoId, page, limit);
+    if (cached) {
+      return res.json(cached);
+    }
+
+    const videoCheck = await pool.query('SELECT id FROM videos WHERE id = $1', [videoId]);
+    if (videoCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Video nije pronađen.' });
+    }
+
+    const countResult = await pool.query(
+      'SELECT COUNT(*)::int AS total FROM comments WHERE video_id = $1',
+      [videoId]
+    );
+    const totalComments = countResult.rows[0]?.total || 0;
+    const totalPages = Math.max(1, Math.ceil(totalComments / limit));
+
+    const commentsResult = await pool.query(
+      `SELECT c.id, c.content, c.created_at,
+              u.id AS user_id, u.username, u.first_name, u.last_name
+       FROM comments c
+       JOIN users u ON u.id = c.user_id
+       WHERE c.video_id = $1
+       ORDER BY c.created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [videoId, limit, offset]
+    );
+
+    const payload = {
+      comments: commentsResult.rows,
+      pagination: {
+        page,
+        limit,
+        totalPages,
+        totalComments,
+        hasNextPage: page < totalPages,
+        hasPrevPage: page > 1,
+      },
+    };
+
+    await commentCache.set(videoId, page, limit, payload);
+    return res.json(payload);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Greška pri učitavanju komentara.' });
+  }
+});
+
+app.post('/api/videos/:id/comment', authMiddleware, commentLimiter, async (req, res) => {
+  const videoId = Number(req.params.id);
+  if (!videoId) {
+    return res.status(400).json({ error: 'Neispravan video ID.' });
+  }
+
+  const content = String(req.body?.content || '').trim();
+  if (!content) {
+    return res.status(400).json({ error: 'Komentar ne može biti prazan.' });
+  }
+  if (content.length > 150) {
+    return res.status(400).json({ error: 'Komentar ne sme biti duži od 150 karaktera.' });
+  }
+
+  try {
+    const videoCheck = await pool.query(
+      'SELECT id, schedule_at FROM videos WHERE id = $1',
+      [videoId]
+    );
+
+    if (videoCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Video nije pronađen.' });
+    }
+
+    const scheduleAt = videoCheck.rows[0].schedule_at;
+    if (scheduleAt && new Date(scheduleAt).getTime() > Date.now()) {
+      return res.status(423).json({ error: 'Video je zakazan i još nije dostupan za komentarisanje.' });
+    }
+
+    const insertResult = await pool.query(
+      `INSERT INTO comments (video_id, user_id, content)
+       VALUES ($1, $2, $3)
+       RETURNING id, video_id, user_id, content, created_at`,
+      [videoId, req.user.id, content]
+    );
+
+    await commentCache.invalidateVideo(videoId);
+
+    return res.status(201).json({
+      message: 'Komentar uspešno postavljen.',
+      comment: insertResult.rows[0],
+    });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Greška pri postavljanju komentara.' });
+  }
+});
+
+app.get('/api/cache/stats', async (req, res) => {
+  try {
+    const stats = await commentCache.getStats();
+    return res.json(stats);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Greška pri čitanju cache statistike.' });
+  }
+});
 
 // Like
 app.post('/api/videos/:id/like', authMiddleware, async (req, res) => { /* ... */ });

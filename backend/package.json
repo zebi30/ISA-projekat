@@ -10,6 +10,7 @@
     "worker:transcode:2": "set TRANSCODE_WORKER_NAME=consumer-2&& node workers/transcodeWorker.js",
     "transcode:requeue-pending": "node scripts/requeuePendingTranscodes.js",
     "thumbs:compress:run": "node scripts/runThumbnailCompressionNow.js",
+    "comments:rate:test": "node scripts/simulateCommentFlood.js",
     "start": "node server.js",
     "etl:popular:run": "node scripts/runPopularVideosEtlNow.js"
   },
