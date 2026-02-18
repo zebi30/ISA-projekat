@@ -9,11 +9,15 @@ Kada pokrećeš monitoring kroz `docker-compose`, Prometheus može da radi u dva
 - `cluster` (podrazumevano): čita metrike sa `api1:5000` i `api2:5000`
 - `dev`: čita metrike samo sa `host.docker.internal:5000`
 
-Režim biraš jednom promenljivom:
+Režim biraš promenljivom `PROMETHEUS_CONFIG_FILE` pre pokretanja servisa:
 
 ```powershell
 $env:PROMETHEUS_CONFIG_FILE="prometheus.dev.yml"
 docker compose up -d prometheus grafana
+```
+
+```bash
+PROMETHEUS_CONFIG_FILE=prometheus.dev.yml docker compose up -d prometheus grafana
 ```
 
 Za klaster režim:
@@ -23,7 +27,13 @@ $env:PROMETHEUS_CONFIG_FILE="prometheus.cluster.yml"
 docker compose up -d prometheus grafana
 ```
 
+```bash
+PROMETHEUS_CONFIG_FILE=prometheus.cluster.yml docker compose up -d prometheus grafana
+```
+
 Ako promenljiva nije postavljena, koristi se `prometheus.cluster.yml`.
+
+Ako želiš da promeniš već pokrenut Prometheus na drugi `.yml`, samo pokreni isti `docker compose up -d prometheus grafana` sa novom vrednošću promenljive.
 
 ## Šta se prati
 

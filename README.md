@@ -13,6 +13,6 @@ Metrike koje su dostupne:
 - broj aktivnih korisnika u poslednja 24h
 
 Monitoring konfiguracija i dashboard su u folderu [monitoring/README.md](monitoring/README.md) (lokalna Windows instalacija Prometheus + Grafana).
+Za promenu Prometheus podešavanja između fajlova (`prometheus.dev.yml` / `prometheus.cluster.yml`) koristi `PROMETHEUS_CONFIG_FILE` pri `docker compose up`.
 
 Napomena: Grafana je podešena da radi na `http://localhost:3001` kako ne bi bila u konfliktu sa React dev serverom na portu `3000`.
-
