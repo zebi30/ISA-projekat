@@ -1076,13 +1076,26 @@ io.on("connection", (socket) => {
 
     // 1) PROVERI DA LI JE VIDEO LIVE/STREAMING
     try {
-      const r = await pool.query("SELECT is_live FROM videos WHERE id=$1", [id]);
+      const r = await pool.query("SELECT schedule_at, is_live FROM videos WHERE id=$1", [id]);
       if (r.rows.length === 0) {
         socket.emit("chat:error", { message: "Video ne postoji." });
         return;
       }
-      if (!r.rows[0].is_live) {
-        socket.emit("chat:error", { message: "Live chat je dostupan samo tokom live streaming-a." });
+      
+      const row = r.rows[0];
+
+      // Live chat dozvoljen ako:
+      // 1) video je startovan kao live (is_live=true) OR
+      // 2) video je schedule stream (schedule_at postoji i vec je poceo)
+      const now = Date.now();
+      const scheduleTs = row.schedule_at ? new Date(row.schedule_at).getTime() : null;
+
+      const isScheduledAndStarted = scheduleTs && !Number.isNaN(scheduleTs) && now >= scheduleTs;
+
+      if (!row.is_live && !isScheduledAndStarted) {
+        socket.emit("chat:error", {
+          message: "Chat je dostupan samo tokom live/zakazanog streaming režima (kad stream počne)."
+        });
         return;
       }
     } catch (e) {
@@ -1105,7 +1118,9 @@ io.on("connection", (socket) => {
     socket.data.user = user;
     
     // 3) JOIN LIVE ROOM (razmena poruka samo između gledalaca tog videa)
-    socket.join(`live:${id}`);
+    socket.join(`video:${id}`);
+    //console.log("✅ joined room:", `video:${id}`, "user:", socket.data.user);
+
   });
 
   socket.on("chat:message", async ({ videoId, text }) => {
@@ -1118,15 +1133,15 @@ io.on("connection", (socket) => {
 
     // proveri da i dalje traje live (ako je stream završio, ne salji poruke)
     try {
-      const r = await pool.query("SELECT is_live FROM videos WHERE id=$1", [id]);
-      if (r.rows.length === 0 || !r.rows[0].is_live) return;
+      const r = await pool.query("SELECT schedule_at, is_live FROM videos WHERE id=$1", [id]);
+      if (r.rows.length === 0) return;
     } catch {
       return;
     }
     const user = socket.data.user || { id: null, username: "Guest" };
 
     // EMIT ISTO U LIVE ROOM 
-    io.to(`live:${id}`).emit("chat:message", {
+    io.to(`video:${id}`).emit("chat:message", {
       videoId: id,
       text: clean,
       user,
@@ -1137,7 +1152,7 @@ io.on("connection", (socket) => {
   socket.on("chat:leave", ({ videoId }) => {
     const id = Number(videoId);
     if (!id) return;
-    socket.leave(`live:${id}`);
+    socket.leave(`video:${id}`);
   });
 
   socket.on('disconnect', () => {
