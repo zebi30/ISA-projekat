@@ -263,7 +263,7 @@ router.post(
 
       // --- MQ: publish UploadEvent (JSON + Protobuf) ---
       try {
-        //const authorUsername = req.user?.username || null; // ti u auth middleware trenutno setuješ samo {id}
+        //const authorUsername = req.user?.username || null; //  u auth middleware trenutno setujes samo {id}
         const u = await pool.query("SELECT username FROM users WHERE id=$1", [req.user.id]);
         const authorUsername = u.rows[0]?.username || null;
 
@@ -367,6 +367,7 @@ router.post(
 );
 
 // GET /api/videos/:id  (public)
+// Samo vraca podatke o videu, NE povecava views
 router.get("/:id", blockScheduledVideoAccess, async (req, res) => {
   const videoId = Number(req.params.id);
   if (!videoId) return res.status(400).json({ message: "Invalid video id" });

@@ -53,9 +53,9 @@ export default function UploadVideoPage() {
   const [uploadedScheduleAt, setUploadedScheduleAt] = useState(null);
 
   async function onSubmit(e) {
-    e.preventDefault();
+    e.preventDefault();           //da se ne refresuje stranica kad se submituje forma
     setMsg("");
-    setUploadedVideoId(null);
+    setUploadedVideoId(null);     // resetuj prethodni upload (ako je bilo) kad se pokrene novi upload
     setUploadedScheduleAt(null);
 
     // validacija
@@ -75,7 +75,7 @@ export default function UploadVideoPage() {
       }
     }
 
-    const fd = new FormData();
+    const fd = new FormData();        // FormData objekat koji se koristi za slanje multipart/form-data zahteva, sto je potrebno za slanje fajlova (video i thumbnail) zajedno sa ostalim podacima (naslov, opis, tagovi, lokacija, zakazivanje)
     fd.append("title", title);
     fd.append("description", description);
     fd.append("tags", tags);
@@ -97,7 +97,7 @@ export default function UploadVideoPage() {
       fd.append("location", JSON.stringify(locationObj));
     }
     
-    fd.append("video", video);
+    fd.append("video", video);              //dodajes u polje "video" fajl koji je izabran u inputu
     fd.append("thumbnail", thumbnail);
 
     const token = localStorage.getItem("token");
@@ -107,7 +107,7 @@ export default function UploadVideoPage() {
     }
 
     try {
-      const res = await fetch("http://localhost:5000/api/videos", {
+      const res = await fetch("http://localhost:5000/api/videos", {     //FRONT SALJE BACKU POST ZAHTEV , BE prima na ruti /api/videos
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
         body: fd,
