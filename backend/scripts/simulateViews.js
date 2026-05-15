@@ -11,6 +11,10 @@ async function main() {
 
   const start = Date.now();
 
+  const beforeResponse = await fetch(`http://localhost:5000/api/videos/${videoId}`);
+  const beforeData = await beforeResponse.json();
+  console.log(`Pre simulacije, views = ${beforeData.views}`);
+
   const reqs = Array.from({ length: n }, () =>
     fetch(url, { method: "POST" }).then(async (r) => {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -20,6 +24,10 @@ async function main() {
 
   const results = await Promise.all(reqs);
   const last = results[results.length - 1];
+
+  const afterResponse = await fetch(`http://localhost:5000/api/videos/${videoId}`);
+  const afterData = await afterResponse.json();
+  console.log(`Odmah posle pokretanja simulacije, views = ${afterData.views}`);
 
   console.log(`Gotovo za ${Date.now() - start}ms`);
   console.log(`Zadnji odgovor views = ${last.views}`);

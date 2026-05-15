@@ -354,18 +354,6 @@ app.get("/health/ready", async (req, res) => {
   return res.json(result);
 });
 
-app.get("/health", async (req, res) => {
-  // isto kao /health/ready
-  const result = { ok: true, db: "up", redis: "up" };
-
-  try { await pool.query("SELECT 1"); } catch { result.db = "down"; result.ok = false; }
-  result.redis = await checkRedis();
-  if (result.redis !== "up") result.ok = false;
-
-  if (!result.ok) return res.status(503).json(result);
-  return res.json(result);
-});
-
 app.get("/whoami", (req, res) => {      //identitet replike, koristi se za testiranje load balancera i sticky sessiona
   res.json({
     instance: process.env.INSTANCE_NAME || "unknown",
@@ -1054,9 +1042,9 @@ const { startNightlyRebuild } = require("./jobs/rebuildMapTiles");
 const { startNightlyThumbnailCompression } = require("./jobs/compressOldThumbnails");
 
 //app.listen(PORT, () => console.log(`Backend running on ${PORT}`));
-const server = http.createServer(app);      //real time razmena poruka, kad neko udje na video -> automatski se pridruzi chatroomu, ne cuva se istorija
+const server = http.createServer(app);    //pravi server koji ima http rute     //real time razmena poruka, kad neko udje na video -> automatski se pridruzi chatroomu, ne cuva se istorija
 
-const io = new Server(server, {
+const io = new Server(server, {             //pravi server koji ima i http rute i websocket komunikaciju/konekcije
   cors: {
     origin: process.env.FRONTEND_URL || "http://localhost:3000",
     methods: ["GET", "POST"]
@@ -1217,18 +1205,18 @@ io.on("connection", (socket) => {
       // 1) video je startovan kao live (is_live=true) OR
       // 2) video je schedule stream (schedule_at postoji i vec je poceo)
       const now = Date.now();
-      const scheduleTs = row.schedule_at ? new Date(row.schedule_at).getTime() : null;
+      const scheduleTs = row.schedule_at ? new Date(row.schedule_at).getTime() : null;    // ako postoji schedule_at, pretvori u timestamp
 
-      const isScheduledAndStarted = scheduleTs && !Number.isNaN(scheduleTs) && now >= scheduleTs;
+      const isScheduledAndStarted = scheduleTs && !Number.isNaN(scheduleTs) && now >= scheduleTs;     // ako je schedule_at validan timestamp i vec je prosao, onda je stream "počeo"
 
-      if (!row.is_live && !isScheduledAndStarted) {
+      if (!row.is_live && !isScheduledAndStarted) {       // nije live i nije ni zakazani stream koji je već počeo
         socket.emit("chat:error", {
           message: "Chat je dostupan samo tokom live/zakazanog streaming režima (kad stream počne)."
         });
         return;
       }
     } catch (e) {
-      socket.emit("chat:error", { message: "Server error (chat join)." });
+      socket.emit("chat:error", { message: "Server error (chat join)." });        //ako ne može da proveri video, ne dozvoli pristup chatu
       return;
     }
 
@@ -1248,7 +1236,6 @@ io.on("connection", (socket) => {
     
     // 3) JOIN LIVE ROOM (razmena poruka samo između gledalaca tog videa)
     socket.join(`video:${id}`);
-    //console.log("✅ joined room:", `video:${id}`, "user:", socket.data.user);
 
   });
 

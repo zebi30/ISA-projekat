@@ -6,10 +6,10 @@ import { createWatchPartyRoom } from "../services/api";
 import { io } from "socket.io-client";
 
 export default function VideoWatch() {
-  const { id } = useParams();
-  const navigate = useNavigate();
+  const { id } = useParams();         //uzmi id videa iz url-a (npr. /videos/123 -> id = 123)
+  const navigate = useNavigate();       //za navigaciju
 
-  const [video, setVideo] = useState(null);
+  const [video, setVideo] = useState(null);     //podaci o videu
   const [loading, setLoading] = useState(true);
   
   // Comments state
@@ -67,11 +67,11 @@ export default function VideoWatch() {
   }, [id, isLoggedIn, token]);
 
   const loadVideo = useCallback(async () => {
-    setLoading(true);
+    setLoading(true);                               //pocini ucitavanje videa, prikazi loading indikator
 
     try {
-      const res = await fetch(`http://localhost:5000/api/videos/${id}/watch`, { method: "POST" });
-      const data = await res.json().catch(() => ({}));
+      const res = await fetch(`http://localhost:5000/api/videos/${id}/watch`, { method: "POST" });    //front sa be
+      const data = await res.json().catch(() => ({}));      //ako ne uspe da cita json, vrati prazan objekat da se ne bi srusio ceo sajt
 
       // scheduled lock sa 423 (backend već vraća payload)
       if (res.status === 423) {

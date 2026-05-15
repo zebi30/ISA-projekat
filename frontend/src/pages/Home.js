@@ -3,18 +3,18 @@ import { useNavigate } from 'react-router-dom';
 import { getPublicVideos, getLatestPopularVideos } from '../services/api';
 
 export default function Home() {
-  const [videos, setVideos] = useState([]);
-  const [popularVideos, setPopularVideos] = useState([]);
+  const [videos, setVideos] = useState([]);             // state za cuvanje videa koje dobijemo od api
+  const [popularVideos, setPopularVideos] = useState([]);   
   const [popularRunAt, setPopularRunAt] = useState(null);
-  const [joinRoomId, setJoinRoomId] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [joinRoomId, setJoinRoomId] = useState('');         // state za cuvanje vrednosti inputa za joinovanje watch party-a po room id-u
+  const [loading, setLoading] = useState(true);       // state za prikaz loading indikatora dok se videi ucitavaju
+  const [error, setError] = useState('');         // state za cuvanje eventualne greske koja se desi prilikom ucitavanja videa ili popularnih videa
   const navigate = useNavigate();
   
   const token = localStorage.getItem('token');
   const isLoggedIn = !!token;
 
-  useEffect(() => {
+  useEffect(() => {         //kad se home ucita, pozovi fetch da ucita videe. pozovi api da dobijes videe i popularne videe
     fetchVideos();
     if (token) {
       fetchPopularVideos();
@@ -24,14 +24,14 @@ export default function Home() {
     }
   }, [token]);
 
-  const fetchVideos = async () => {
+  const fetchVideos = async () => {   // funkcija koja poziva api da dobijes videe i smesti ih u state
     try {
-      const data = await getPublicVideos();
-      setVideos(data);
+      const data = await getPublicVideos();   // pozovi api sa BE da dobijes videe (backu salje get /api/videos i vodi na tu rutu i vraca videe) i smesti ih u state
+      setVideos(data);      //podatke koje dobijes od api smestis u state videos
     } catch (err) {
-      setError(err.message);
+      setError(err.message);      //ako se desi greska, upisi gresku
     } finally {
-      setLoading(false);
+      setLoading(false);        //kad se sve zavrsi, bilo da je uspeh ili greska, ucitavanje je zavrseno, pa setuj loading na false da se skine loading indikator i prikaze ili greska ili videi
     }
   };
 
@@ -62,7 +62,7 @@ export default function Home() {
     if (video.is_live) {
       navigate(`/live/${video.id}`);
     } else {
-      navigate(`/videos/${video.id}`);
+      navigate(`/videos/${video.id}`);        //ako nije live, vodi na normalnu stranicu za gledanje videa
     }
   };
   const handleWatchClick = async (video) => {
@@ -90,7 +90,7 @@ export default function Home() {
     navigate(`/videos/${video.id}`);
   };
 
-  if (loading) {
+  if (loading) {        //ako se videi jos ucitavaju, prikazi loading indikator
     return (
       <div style={{ 
         minHeight: '100vh', 
@@ -105,7 +105,7 @@ export default function Home() {
     );
   }
 
-  if (error) {
+  if (error) {        //ako se desila greska prilikom ucitavanja videa, prikazi poruku o gresci
     return (
       <div style={{ 
         minHeight: '100vh', 
